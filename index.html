@@ -407,11 +407,18 @@ async function timedFetch(url, options, timeoutMs, waitingText) {
   }
 }
 
-async function overpass(query, label) {
+async function overpass(query, label, rounds = 1) {
   let lastErr;
-  // zwei Durchgänge über alle Server; kostenlose Server haben öfter kurze Aussetzer
-  // ein Durchgang über alle Server; danach übernimmt Wikipedia als Ersatzquelle
-  {
+  // „Automatisch“: ein Durchgang, danach übernimmt Wikipedia.
+  // „nur OpenStreetMap“: bis zu drei Durchgänge im Abstand von 20 s.
+  for (let round = 1; round <= rounds; round++) {
+    if (round > 1) {
+      log(`${label}: alle Server fehlgeschlagen – Durchgang ${round}/${rounds} in 20 s …`, 'warn');
+      job.waiting = { text: `Pause vor Durchgang ${round}/${rounds}`, since: Date.now() };
+      await sleep(20000);
+      job.waiting = null;
+      if (job.controller.signal.aborted) throw new Error('abgebrochen');
+    }
     for (const url of OVERPASS) {
       const host = new URL(url).host;
       log(`${label}: Anfrage an ${host} …`, 'dim');
@@ -502,7 +509,7 @@ async function search() {
       const [s, w, n, e] = bbox(chunks[i], 1600);
       const area = (distance({ latitude: s, longitude: w }, { latitude: n, longitude: w }) * distance({ latitude: s, longitude: w }, { latitude: s, longitude: e })) / 1e6;
       log(`Abschnitt ${i + 1}/${chunks.length}: Rechteck ${s},${w} – ${n},${e} (ca. ${area.toFixed(0)} km²)`, 'dim');
-      const json = await overpass(buildQuery(chunks[i]), `Abschnitt ${i + 1}/${chunks.length}`);
+      const json = await overpass(buildQuery(chunks[i]), `Abschnitt ${i + 1}/${chunks.length}`, sourceMode === 'osm' ? 3 : 1);
       let kept = 0;
       for (const el of json.elements) {
         const t = el.tags || {};
