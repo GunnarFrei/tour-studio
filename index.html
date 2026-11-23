@@ -408,7 +408,7 @@ async function overpass(query, label) {
       const host = new URL(url).host;
       log(`${label}: Anfrage an ${host} …`, 'dim');
       try {
-        const { res, body, ms } = await timedFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(query) }, 30000, `wartet auf ${host} (${label})`);
+        const { res, body, ms } = await timedFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(query) }, url === OVERPASS[0] ? 75000 : 30000, `wartet auf ${host} (${label})`);
         const kb = (body.length / 1024).toFixed(0);
         if (!res.ok) {
           const hint = res.status === 429 ? ' – zu viele Anfragen' : (res.status === 502 || res.status === 503 || res.status === 504) ? ' – Server gestört/überlastet' : '';
