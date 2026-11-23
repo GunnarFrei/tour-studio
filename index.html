@@ -59,6 +59,11 @@
   th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
   tr.conflict td { background: #fff1f0; }
   .warn { color: var(--red); font-weight: 600; }
+  #pane-timeline tr[data-i] { cursor: pointer; }
+  #pane-timeline tr[data-i]:hover td { background: #f3f6fb; }
+  #pane-timeline tr.conflict:hover td { background: #ffe3e0; }
+  #tip { position: fixed; z-index: 2000; max-width: 380px; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; box-shadow: 0 6px 20px rgba(0,0,0,.15); font-size: 13px; pointer-events: none; }
+  #tip .meta, #tip .facts { margin: 3px 0; }
   #logbar { background: #11161c; color: #d7dde4; display: grid; grid-template-rows: auto 1fr; height: 230px; }
   #logbar.collapsed { height: 34px; }
   #logbar .top { display: flex; gap: 12px; align-items: center; padding: 6px 12px; border-bottom: 1px solid #262e38; }
@@ -127,6 +132,7 @@
   <div id="log"></div>
 </section>
 
+<div id="tip" class="hidden"></div>
 <dialog id="dlg">
   <h3 id="dlgTitle" style="margin-top:0"></h3>
   <p id="dlgHint" style="color:var(--muted)"></p>
@@ -913,9 +919,11 @@ function renderGroups() {
   if (!('weitere' in state.groups)) state.groups.weitere = false;
   const counts = {};
   for (const it of state.items) if (it.group) counts[it.group] = (counts[it.group] || 0) + 1;
-  bar.innerHTML = 'Arten: ' + Object.entries(GROUPS).map(([k, name]) =>
+  const allOn = Object.keys(GROUPS).every((k) => state.groups[k] !== false);
+  bar.innerHTML = `Arten: <label class="inline"><input type="checkbox" id="grpAll" ${allOn ? 'checked' : ''}> <b>alle</b></label> ` + Object.entries(GROUPS).map(([k, name]) =>
     `<label class="inline"><input type="checkbox" data-group="${k}" ${state.groups[k] !== false ? 'checked' : ''}> ${name}${counts[k] ? ` (${counts[k]})` : ''}</label>`).join(' ');
-  bar.querySelectorAll('input').forEach((cb) => cb.addEventListener('change', () => { state.groups[cb.dataset.group] = cb.checked; render(); save(); }));
+  bar.querySelectorAll('input[data-group]').forEach((cb) => cb.addEventListener('change', () => { state.groups[cb.dataset.group] = cb.checked; render(); save(); }));
+  $('grpAll').addEventListener('change', (e) => { for (const k of Object.keys(GROUPS)) state.groups[k] = e.target.checked; render(); save(); });
 }
 function renderList() {
   renderGroups();
@@ -953,6 +961,7 @@ function renderList() {
           ${it.wikiUrl ? `<a href="${escapeHtml(it.wikiUrl)}" target="_blank" rel="noopener">Wikipedia</a>` : ''}
           ${it.osm ? `<a href="${escapeHtml(it.osm.link)}" target="_blank" rel="noopener">OSM</a>` : ''}
           ${idx < state.items.length - 1 ? '<button class="merge" title="mit dem nächsten Eintrag zu einer Ansage zusammenfassen">↓ zusammenfassen</button>' : ''}
+          ${it.fullDesc ? '<button class="restore" title="gekürzten Text zurücksetzen">Original wiederherstellen</button>' : ''}
           <button class="del danger">Entfernen</button>
           <span class="count">${it.desc.length} Zeichen · ca. ${sec} s</span>
         </div>
@@ -963,43 +972,123 @@ function renderList() {
     ta.addEventListener('input', () => { it.desc = ta.value; card.querySelector('.count').textContent = `${it.desc.length} Zeichen · ca. ${speechSeconds(it)} s`; renderTimeline(); save(); });
     card.querySelector('.show').addEventListener('click', () => focusItem(it.id));
     card.querySelector('.usewiki')?.addEventListener('click', () => { it.desc = it.wikiText; render(); save(); });
+    card.querySelector('.restore')?.addEventListener('click', () => { it.desc = it.fullDesc; delete it.fullDesc; render(); save(); });
     card.querySelector('.del').addEventListener('click', () => { state.items = state.items.filter((x) => x !== it); render(); save(); });
     card.querySelector('.merge')?.addEventListener('click', () => mergeWithNext(idx));
     box.appendChild(card);
   });
 }
-function mergeWithNext(idx) {
-  const a = state.items[idx], b = state.items[idx + 1];
+function mergeWithNext(idx) { mergeItems(state.items[idx], state.items[idx + 1]); }
+function mergeItems(a, b) {
   if (!a || !b) return;
+  const idx = state.items.indexOf(a);
   a.name = `${a.name}, ${b.name}`;
   a.desc = [a.desc, b.desc].filter(Boolean).join(' ');
   a.label = '';
   a.facts = [...(a.facts || []), ...(b.facts || [])];
   a.checked = true;
   if (a.source === 'osm' || a.source === 'wiki') a.source = 'manual';
-  state.items.splice(idx + 1, 1);
+  state.items.splice(state.items.indexOf(b), 1);
   recalc(); render(); save();
   log(`Zusammengefasst: „${a.name}“`, 'ok');
+}
+// Zeitplan: wann beginnt/endet jede Ansage, wo überschneiden sie sich
+function timeline() {
+  const speed = Math.max(3, +$('speed').value || 18) / 3.6; // m/s
+  const on = state.items.filter((i) => isActive(i) && i.triggerKm != null).sort((a, b) => a.triggerKm - b.triggerKm);
+  return on.map((it, i) => {
+    const dur = speechSeconds(it);
+    const endM = it.triggerKm + dur * speed;
+    const next = on[i + 1] || null;
+    return { it, dur, endM, next, clash: !!(next && next.triggerKm < endM), speed };
+  });
+}
+// Text am Satzende so kürzen, dass die Ansage vor der nächsten endet (mind. ein Satz bleibt)
+function shortenToFit(row, marginM = 30) {
+  const { it, next, speed } = row;
+  if (!next) return false;
+  const availS = (next.triggerKm - it.triggerKm - marginM) / speed;
+  const introLen = spoken({ ...it, desc: '' }).length + 2;
+  const maxChars = Math.floor(availS * CHARS_PER_SECOND) - introLen;
+  const sentences = (it.desc.match(/[^.!?]+[.!?]+["“”„«»]?\s*/g) || [it.desc]).map((x) => x.trim());
+  let text = '';
+  for (const s of sentences) {
+    const cand = text ? `${text} ${s}` : s;
+    if (cand.length > maxChars) break;
+    text = cand;
+  }
+  if (!text) return false; // nicht einmal ein Satz passt
+  if (text.length >= it.desc.length) return true;
+  if (!it.fullDesc) it.fullDesc = it.desc;
+  it.desc = text;
+  log(`Gekürzt: „${it.name}“ auf ${text.length} Zeichen`, 'ok');
+  return true;
+}
+function fixRow(row, action) {
+  if (action === 'shorten' && !shortenToFit(row)) { alert('Selbst der erste Satz ist zu lang – zusammenfassen oder abwählen.'); return; }
+  if (action === 'merge') { mergeItems(row.it, row.next); return; }
+  if (action === 'drop') { row.next.checked = false; log(`Abgewählt: „${row.next.name}“`, 'ok'); }
+  recalc(); render(); save();
+}
+function autoFix() {
+  let changed = 0;
+  for (let guard = 0; guard < 200; guard++) {
+    const row = timeline().find((r) => r.clash);
+    if (!row) break;
+    if (!shortenToFit(row)) {
+      // der weiter von der Strecke entfernte der beiden fliegt raus
+      const loser = (row.next.distanceToRoute || 0) >= (row.it.distanceToRoute || 0) ? row.next : row.it;
+      loser.checked = false;
+      log(`Abgewählt: „${loser.name}“ (kein Platz)`, 'warn');
+    }
+    changed++;
+  }
+  recalc(); render(); save();
+  log(changed ? `Automatisch behoben: ${changed} Überschneidung(en)` : 'Keine Überschneidungen', 'ok');
 }
 function renderTimeline() {
   const pane = $('pane-timeline');
   if (!state.tour) { pane.innerHTML = ''; return; }
-  const speed = Math.max(3, +$('speed').value || 18) / 3.6; // m/s
-  const on = state.items.filter((i) => isActive(i) && i.triggerKm != null).sort((a, b) => a.triggerKm - b.triggerKm);
-  let conflicts = 0;
-  const rows = on.map((it, i) => {
-    const dur = speechSeconds(it);
-    const endM = it.triggerKm + dur * speed;
-    const next = on[i + 1];
-    const clash = next && next.triggerKm < endM;
-    if (clash) conflicts++;
-    return `<tr class="${clash ? 'conflict' : ''}"><td>${fmtKm(it.triggerKm)}</td><td>${escapeHtml(it.name)}</td><td>${dur} s</td><td>${fmtKm(endM)}</td><td>${clash ? `<span class="warn">überschneidet sich mit „${escapeHtml(next.name)}“ (${Math.round(endM - next.triggerKm)} m)</span>` : ''}</td></tr>`;
-  });
+  const rows = timeline();
+  const conflicts = rows.filter((r) => r.clash).length;
   pane.innerHTML = `
     <p class="meta">Bei ${(+$('speed').value || 18)} km/h und geschätzt ${CHARS_PER_SECOND} Zeichen pro Sekunde Sprechtempo. Eine neue Ansage bricht die laufende ab.</p>
-    ${conflicts ? `<p class="warn">${conflicts} Überschneidung(en) – Text kürzen, Einträge zusammenfassen oder abwählen.</p>` : on.length ? '<p style="color:var(--green)">Keine Überschneidungen.</p>' : ''}
-    <table><thead><tr><th>ab km</th><th>Ansage</th><th>Dauer</th><th>endet km</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+    ${conflicts ? `<p class="warn">${conflicts} Überschneidung(en) <button id="btnAutoFix">Alle automatisch beheben</button></p>` : rows.length ? '<p style="color:var(--green)">Keine Überschneidungen.</p>' : ''}
+    <table><thead><tr><th>ab km</th><th>Ansage</th><th>Dauer</th><th>endet km</th><th></th></tr></thead><tbody>
+    ${rows.map((r, i) => `<tr class="${r.clash ? 'conflict' : ''}" data-i="${i}"><td>${fmtKm(r.it.triggerKm)}</td><td class="tl-name">${escapeHtml(r.it.name)}</td><td>${r.dur} s</td><td>${fmtKm(r.endM)}</td>
+      <td>${r.clash ? `<span class="warn">überschneidet sich mit „${escapeHtml(r.next.name)}“ (${Math.round(r.endM - r.next.triggerKm)} m)</span>
+        <div class="row"><button data-act="shorten">Kürzen</button><button data-act="merge">Zusammenfassen</button><button data-act="drop">Nächsten abwählen</button></div>` : ''}</td></tr>`).join('')}
+    </tbody></table>`;
+  $('btnAutoFix')?.addEventListener('click', autoFix);
+  pane.querySelectorAll('tr[data-i]').forEach((tr) => {
+    const r = rows[+tr.dataset.i];
+    tr.querySelectorAll('button[data-act]').forEach((b) => b.addEventListener('click', (e) => { e.stopPropagation(); fixRow(r, b.dataset.act); }));
+    tr.addEventListener('mouseenter', (e) => showTip(r.it, e));
+    tr.addEventListener('mousemove', moveTip);
+    tr.addEventListener('mouseleave', hideTip);
+    tr.addEventListener('click', () => focusItem(r.it.id));
+  });
 }
+// Detail-Kästchen beim Überfahren einer Zeitplan-Zeile
+function showTip(it, e) {
+  const tip = $('tip');
+  const src = { gpx: 'aus GPX', osm: 'OpenStreetMap', wiki: 'Wikipedia', manual: 'eigener Punkt' }[it.source] || '';
+  tip.innerHTML = `<b>${escapeHtml(it.name)}</b>${it.label ? ` · ${escapeHtml(it.label)}` : ''}<br>
+    <span class="meta">${src} · ${it.distanceToRoute} m neben der Strecke · km ${fmtKm(it.km)} · ${it.desc.length} Zeichen${it.fullDesc ? ' (gekürzt)' : ''}</span>
+    ${it.facts && it.facts.length ? `<div class="facts">${it.facts.map(escapeHtml).join(' · ')}</div>` : ''}
+    <div>${escapeHtml((it.desc || 'kein Text – nur der Name wird angesagt').slice(0, 320))}${it.desc.length > 320 ? ' …' : ''}</div>`;
+  tip.classList.remove('hidden');
+  moveTip(e);
+}
+function moveTip(e) {
+  const tip = $('tip');
+  // bevorzugt links vom Zeitplan (über der Karte), damit die Knöpfe frei bleiben
+  let x = e.clientX - tip.offsetWidth - 24;
+  if (x < 10) x = Math.min(e.clientX + 16, window.innerWidth - tip.offsetWidth - 10);
+  const y = Math.min(e.clientY + 16, window.innerHeight - tip.offsetHeight - 10);
+  tip.style.left = `${x}px`; tip.style.top = `${y}px`;
+}
+function hideTip() { $('tip').classList.add('hidden'); }
 $('speed').addEventListener('input', renderTimeline);
 $('onlyOn').addEventListener('change', renderList);
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
