@@ -22,6 +22,7 @@
   button.danger { color: var(--red); }
   button:disabled { opacity: .5; cursor: default; }
   label.inline { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+  select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
   input[type=number] { width: 64px; font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
   main { display: grid; grid-template-columns: 1fr 520px; min-height: 0; }
   #map { min-height: 0; background: #e9ecef; position: relative; }
@@ -82,6 +83,13 @@
   <label class="btn" for="fileInput">GPX öffnen</label>
   <input type="file" id="fileInput" accept=".gpx" class="hidden">
   <button id="btnSearch" class="primary" disabled>Sehenswürdigkeiten suchen</button>
+  <label class="inline">Quelle
+    <select id="source" title="Woher die Sehenswürdigkeiten kommen">
+      <option value="auto">Automatisch</option>
+      <option value="osm">nur OpenStreetMap</option>
+      <option value="wiki">nur Wikipedia</option>
+    </select>
+  </label>
   <button id="btnCancel" class="hidden danger">Abbrechen</button>
   <label class="inline">Tempo <input type="number" id="speed" value="18" min="5" max="45"> km/h</label>
   <button id="btnClaude" disabled title="Liste als Text für den Chat mit Claude">Für Claude kopieren</button>
@@ -484,7 +492,10 @@ async function search() {
     const found = new Map();
     const stats = { far: 0, noCat: 0, skipped: 0, own: 0, dup: 0, noName: 0 };
     let osmFailed = null;
+    const sourceMode = $('source').value;
+    log(`Quelle: ${{ auto: 'automatisch (OpenStreetMap, sonst Wikipedia)', osm: 'nur OpenStreetMap', wiki: 'nur Wikipedia' }[sourceMode]}`, 'dim');
     try {
+    if (sourceMode === 'wiki') throw new Error('Wikipedia gewählt');
     for (let i = 0; i < chunks.length; i++) {
       job.step = `OpenStreetMap: Abschnitt ${i + 1}/${chunks.length}`;
       setStatus(job.step, true, (i / chunks.length) * 0.5);
@@ -515,10 +526,12 @@ async function search() {
     }
     } catch (e) {
       if (e.message === 'abgebrochen') throw e;
+      if (sourceMode === 'osm') throw e; // keine Ersatzquelle gewünscht
       osmFailed = e;
     }
     if (osmFailed) {
-      log(`OpenStreetMap nicht verfügbar (${osmFailed.message}) – wechsle zur Ersatzquelle Wikipedia`, 'warn');
+      if (sourceMode === 'wiki') log('Suche über Wikipedia …', 'ok');
+      else log(`OpenStreetMap nicht verfügbar (${osmFailed.message}) – wechsle zur Ersatzquelle Wikipedia`, 'warn');
       job.step = 'Wikipedia-Umkreissuche';
       setStatus(job.step, true, 0.5);
       const own = state.items.filter((it) => it.source !== 'osm' && it.source !== 'wiki');
@@ -954,6 +967,8 @@ $('btnLogToggle').addEventListener('click', () => { const c = $('logbar').classL
 /* ================================================================
    Start
    ================================================================ */
+try { $('source').value = localStorage.getItem('tour-studio-source') || 'auto'; } catch (e) { /* egal */ }
+$('source').addEventListener('change', () => { try { localStorage.setItem('tour-studio-source', $('source').value); } catch (e) { /* egal */ } });
 initMap();
 if (restore()) { prepareRoute(); recalc(); render(true); log(`Letzte Sitzung wiederhergestellt: „${state.tour.name}“`, 'dim'); }
 else { render(); log('Bereit. GPX-Datei öffnen oder ins Fenster ziehen.', 'dim'); }
