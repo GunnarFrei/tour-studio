@@ -960,7 +960,7 @@ function renderList() {
           ${it.wikiText && it.wikiText !== it.desc ? '<button class="usewiki">Wikipedia-Text übernehmen</button>' : ''}
           ${it.wikiUrl ? `<a href="${escapeHtml(it.wikiUrl)}" target="_blank" rel="noopener">Wikipedia</a>` : ''}
           ${it.osm ? `<a href="${escapeHtml(it.osm.link)}" target="_blank" rel="noopener">OSM</a>` : ''}
-          ${idx < state.items.length - 1 ? '<button class="merge" title="mit dem nächsten Eintrag zu einer Ansage zusammenfassen">↓ zusammenfassen</button>' : ''}
+          ${state.items.slice(idx + 1).some(groupOn) ? '<button class="merge" title="mit dem nächsten Eintrag zu einer Ansage zusammenfassen">↓ zusammenfassen</button>' : ''}
           ${it.fullDesc ? '<button class="restore" title="gekürzten Text zurücksetzen">Original wiederherstellen</button>' : ''}
           <button class="del danger">Entfernen</button>
           <span class="count">${it.desc.length} Zeichen · ca. ${sec} s</span>
@@ -978,14 +978,18 @@ function renderList() {
     box.appendChild(card);
   });
 }
-function mergeWithNext(idx) { mergeItems(state.items[idx], state.items[idx + 1]); }
+// mit dem nächsten SICHTBAREN Eintrag zusammenfassen (ausgeblendete Arten überspringen)
+function mergeWithNext(idx) {
+  const next = state.items.slice(idx + 1).find(groupOn);
+  mergeItems(state.items[idx], next);
+}
 function mergeItems(a, b) {
   if (!a || !b) return;
   const idx = state.items.indexOf(a);
   a.name = `${a.name}, ${b.name}`;
   a.desc = [a.desc, b.desc].filter(Boolean).join(' ');
   a.label = '';
-  a.facts = [...(a.facts || []), ...(b.facts || [])];
+  a.facts = [...new Set([...(a.facts || []), ...(b.facts || [])])];
   a.checked = true;
   if (a.source === 'osm' || a.source === 'wiki') a.source = 'manual';
   state.items.splice(state.items.indexOf(b), 1);
