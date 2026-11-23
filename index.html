@@ -104,6 +104,7 @@
       <button data-tab="timeline">Zeitplan</button>
     </div>
     <div class="tabpane" id="pane-list">
+      <div class="toolbar" id="groupBar" title="Welche Arten von Sehenswürdigkeiten angezeigt und übernommen werden"></div>
       <div class="toolbar">
         <label class="inline"><input type="checkbox" id="onlyOn"> nur ausgewählte</label>
         <span id="listSummary"></span>
@@ -220,61 +221,145 @@ function parseGpx(text, fileName) {
 }
 
 /* ================================================================
-   Kategorien: Bezeichnung + maximale Entfernung zur Route
+   Arten (gleiche Logik wie reisefuehrer/src/categories.js)
    ================================================================ */
+const GROUPS = {
+  geschichte: 'Geschichte',
+  kirchen: 'Kirchen',
+  technik: 'Technik',
+  natur: 'Natur',
+  tiere: 'Tiere',
+  kurioses: 'Kunst & Kurioses',
+  weitere: 'Weitere (ungeprüft)',
+};
+
+// Landschaften, die bei Wikidata oft nur als Ort/Ortsteil eingetragen sind (z. B. Campemoor)
+const LANDSCAPE_WORDS = /moor|bruch|heide|niederung|naturschutz|naturpark|venn|marsch|düne/i;
+
+const g = (label, corridor, group) => ({ label, corridor, group });
+
+// OpenStreetMap-Tags → Art
 function classify(t) {
   const h = t.historic, b = t.building;
-  if (h === 'castle') return { label: t.castle_type === 'palace' || t.castle_type === 'manor' ? 'Schloss' : 'Burg', corridor: 1500 };
-  if (b === 'cathedral') return { label: 'Dom', corridor: 1500 };
-  if (t['tower:type'] === 'observation') return { label: 'Aussichtsturm', corridor: 1500 };
-  if (t.man_made === 'lighthouse') return { label: 'Leuchtturm', corridor: 1500 };
-  if (t.amenity === 'place_of_worship') {
-    if (b === 'chapel' || t.place_of_worship === 'chapel') return { label: 'Kapelle', corridor: 150 };
-    if (b === 'church' || b === 'basilica') return { label: 'Kirche', corridor: 600 };
-    if (b === 'mosque') return { label: 'Moschee', corridor: 600 };
-    if (b === 'synagogue') return { label: 'Synagoge', corridor: 300 };
-    if (b && b !== 'yes') return null;
-    return { label: !t.religion || t.religion === 'christian' ? 'Kirche' : 'Gotteshaus', corridor: 300 };
-  }
-  if (h === 'monastery' || t.amenity === 'monastery') return { label: 'Kloster', corridor: 600 };
-  if (h === 'palace' || h === 'manor') return { label: h === 'palace' ? 'Schloss' : 'Herrenhaus', corridor: 600 };
-  if (h === 'ruins') return { label: 'Ruine', corridor: 600 };
-  if (h === 'tower') return { label: 'historischer Turm', corridor: 600 };
-  if (h === 'city_gate') return { label: 'Stadttor', corridor: 600 };
-  if (h === 'windmill' || t.man_made === 'windmill') return { label: 'Windmühle', corridor: 600 };
-  if (h === 'watermill' || t.man_made === 'watermill') return { label: 'Wassermühle', corridor: 300 };
-  if (t.tourism === 'museum') return { label: 'Museum', corridor: 300 };
-  if (t.amenity === 'townhall') return { label: 'historisches Rathaus', corridor: 300 };
-  if (t.tourism === 'viewpoint') return { label: 'Aussichtspunkt', corridor: 200 };
-  if (h === 'monument') return { label: 'Denkmal', corridor: 300 };
-  if (h === 'archaeological_site') return { label: 'Bodendenkmal', corridor: 300 };
-  if (h === 'fort') return { label: 'Festung', corridor: 600 };
-  if (t.natural === 'waterfall') return { label: 'Wasserfall', corridor: 300 };
-  if (t.tourism === 'attraction') return { label: 'Sehenswürdigkeit', corridor: 300 };
+  const hasWiki = !!(t.wikipedia || t.wikidata);
+  // Geschichte
+  if (h === 'castle') return g(t.castle_type === 'palace' || t.castle_type === 'manor' ? 'Schloss' : 'Burg', 1500, 'geschichte');
+  if (h === 'palace' || h === 'manor') return g(h === 'palace' ? 'Schloss' : 'Herrenhaus', 600, 'geschichte');
+  if (h === 'ruins') return g('Ruine', 600, 'geschichte');
+  if (h === 'tower') return g('historischer Turm', 600, 'geschichte');
+  if (h === 'city_gate') return g('Stadttor', 600, 'geschichte');
+  if (h === 'fort') return g('Festung', 600, 'geschichte');
+  if (h === 'monument') return g('Denkmal', 300, 'geschichte');
+  if (h === 'archaeological_site') return g('Bodendenkmal', 300, 'geschichte');
+  if (t.amenity === 'townhall') return g('historisches Rathaus', 300, 'geschichte');
   if (h === 'memorial') {
     if (/stolperstein|plaque|stele|grave/.test(t['memorial:type'] || t.memorial || '')) return { skip: 'Stolperstein/Gedenktafel' };
-    return { label: 'Gedenkstätte', corridor: 100 };
+    return g('Gedenkstätte', 100, 'geschichte');
   }
-  if (h === 'building') return { label: 'historisches Gebäude', corridor: 100 };
-  if (h === 'mine') return { label: 'historisches Bergwerk', corridor: 150 };
+  if (h === 'building') return g('historisches Gebäude', 100, 'geschichte');
+  // Kirchen
+  if (b === 'cathedral') return g('Dom', 1500, 'kirchen');
+  if (h === 'monastery' || t.amenity === 'monastery') return g('Kloster', 600, 'kirchen');
+  if (t.amenity === 'place_of_worship') {
+    if (b === 'chapel' || t.place_of_worship === 'chapel') return g('Kapelle', 150, 'kirchen');
+    if (b === 'church' || b === 'basilica') return g('Kirche', 600, 'kirchen');
+    if (b === 'mosque') return g('Moschee', 600, 'kirchen');
+    if (b === 'synagogue') return g('Synagoge', 300, 'kirchen');
+    if (b && b !== 'yes') return null;
+    return g(!t.religion || t.religion === 'christian' ? 'Kirche' : 'Gotteshaus', 300, 'kirchen');
+  }
+  // Technik
+  if (h === 'windmill' || t.man_made === 'windmill') return g('Windmühle', 600, 'technik');
+  if (h === 'watermill' || t.man_made === 'watermill') return g('Wassermühle', 300, 'technik');
+  if (h === 'aircraft') return g('ausgestelltes Flugzeug', 300, 'technik');
+  if (h === 'helicopter') return g('ausgestellter Hubschrauber', 300, 'technik');
+  if (h === 'locomotive' || h === 'railway_car') return g('historische Bahn', 200, 'technik');
+  if (h === 'ship' || h === 'wreck') return g('historisches Schiff', 300, 'technik');
+  if (h === 'tank' || h === 'vehicle') return g('historisches Fahrzeug', 200, 'technik');
+  if (t.aeroway === 'aerodrome') return g('Flugplatz', 1500, 'technik');
+  if (t.lock === 'yes' || t.waterway === 'lock_gate') return g('Schleuse', 300, 'technik');
+  if (t.bridge === 'aqueduct') return g('Kanalbrücke', 300, 'technik');
+  if (t.man_made === 'water_tower') return g('Wasserturm', 600, 'technik');
+  if (t.man_made === 'lighthouse') return g('Leuchtturm', 1500, 'technik');
+  if (t.tourism === 'museum') return g('Museum', 300, 'geschichte');
+  // Natur (Flächen nur mit Wikipedia-Artikel, sonst zu viel Unbedeutendes)
+  if (t['tower:type'] === 'observation') return g('Aussichtsturm', 1500, 'natur');
+  if (t.tourism === 'viewpoint') return g('Aussichtspunkt', 200, 'natur');
+  if (t.leisure === 'bird_hide') return g('Vogelbeobachtung', 200, 'natur');
+  if (t.natural === 'waterfall') return g('Wasserfall', 300, 'natur');
+  if (t.natural === 'tree' && t.denotation === 'natural_monument') return g('Naturdenkmal', 100, 'natur');
+  if (t.natural === 'stone') return g('Findling', 150, 'natur');
+  if (hasWiki && t.natural === 'water') return g('See', 1500, 'natur');
+  if (hasWiki && (t.natural === 'wetland' || t.wetland === 'bog')) return g('Moor', 1000, 'natur');
+  if (hasWiki && (t.leisure === 'nature_reserve' || t.boundary === 'protected_area')) return g('Naturschutzgebiet', 1000, 'natur');
+  // Tiere
+  if (t.tourism === 'zoo') return g(t.zoo === 'petting_zoo' ? 'Streichelzoo' : t.zoo === 'wildlife_park' ? 'Wildpark' : 'Tierpark', 600, 'tiere');
+  // Kunst & Kurioses
+  if (t.tourism === 'artwork') return g('Kunstwerk', 100, 'kurioses');
+  if (t.tourism === 'attraction') return g('Sehenswürdigkeit', 300, 'kurioses');
   return null;
 }
-function buildQuery(chunk) {
-  const [s, w, n, e] = bbox(chunk, 1600);
+
+// Overpass-Abfrage für ein Rechteck [s, w, n, e]
+function overpassQuery([s, w, n, e]) {
   return `[out:json][timeout:60][bbox:${s},${w},${n},${e}];
 (
-nwr[historic~"^(castle|monastery|palace|manor|ruins|tower|city_gate|windmill|watermill|fort|monument|archaeological_site|memorial|building|mine)$"][name];
+nwr[historic~"^(castle|monastery|palace|manor|ruins|tower|city_gate|windmill|watermill|fort|monument|archaeological_site|memorial|building|mine|aircraft|helicopter|locomotive|railway_car|ship|wreck|tank|vehicle)$"];
 nwr[amenity=place_of_worship][name];
 nwr[building=cathedral][name];
-nwr["tower:type"=observation][name];
-nwr[man_made~"^(lighthouse|windmill|watermill)$"][name];
-nwr[tourism~"^(museum|viewpoint|attraction)$"][name];
+nwr["tower:type"=observation];
+nwr[man_made~"^(lighthouse|windmill|watermill|water_tower)$"];
+nwr[tourism~"^(museum|viewpoint|attraction|zoo|artwork)$"];
 nwr[amenity=townhall][name][historic];
 nwr[amenity=townhall][name][heritage];
-nwr[natural=waterfall][name];
+nwr[natural=waterfall];
+nwr[aeroway=aerodrome][name];
+nwr[lock=yes][name];
+nwr[bridge=aqueduct][name];
+nwr[leisure=bird_hide];
+nwr[natural=tree][denotation=natural_monument];
+nwr[natural=stone][name];
+nwr[natural=water][name][~"^wiki(pedia|data)$"~"."];
+nwr[natural=wetland][name][~"^wiki(pedia|data)$"~"."];
+nwr[leisure=nature_reserve][name][~"^wiki(pedia|data)$"~"."];
 );
 out center tags;`;
 }
+
+// Für unbenannte Objekte (z. B. ausgestellter Hubschrauber ohne Namen) einen Namen bilden
+function fallbackName(t, cls) {
+  if (t.name) return t.name;
+  const model = t.model || t['aircraft:model'] || t['aircraft:type'] || t.type_name || '';
+  if (model) return `${cls.label}: ${model}`;
+  if (['ausgestelltes Flugzeug', 'ausgestellter Hubschrauber', 'historische Bahn', 'historisches Fahrzeug', 'Vogelbeobachtung', 'Aussichtsturm', 'Aussichtspunkt', 'Naturdenkmal', 'Wasserturm', 'Windmühle', 'Wassermühle'].includes(cls.label)) {
+    return cls.label;
+  }
+  return null; // ohne Namen nicht ansagen
+}
+
+// Wikidata-Klasse → [Bezeichnung, max. Abstand, Bereich]
+const WD_CLASSES = {
+  Q23413: ['Burg', 1500, 'geschichte'], Q751876: ['Schloss', 1500, 'geschichte'], Q16560: ['Palast', 600, 'geschichte'],
+  Q879050: ['Herrenhaus', 600, 'geschichte'], Q109607: ['Ruine', 600, 'geschichte'], Q82117: ['Stadttor', 600, 'geschichte'],
+  Q12518: ['Turm', 600, 'geschichte'], Q57821: ['Festungsanlage', 600, 'geschichte'], Q4989906: ['Denkmal', 300, 'geschichte'],
+  Q5003624: ['Gedenkstätte', 100, 'geschichte'], Q839954: ['Bodendenkmal', 300, 'geschichte'], Q25550691: ['Rathaus', 300, 'geschichte'],
+  Q543654: ['Rathaus', 300, 'geschichte'], Q41176: ['historisches Gebäude', 100, 'geschichte'], Q3947: ['historisches Haus', 100, 'geschichte'],
+  Q178561: ['Schlachtfeld', 1500, 'geschichte'], Q33506: ['Museum', 300, 'geschichte'], Q207694: ['Kunstmuseum', 300, 'geschichte'],
+  Q756102: ['Freilichtmuseum', 600, 'geschichte'], Q39614: ['Friedhof', 300, 'geschichte'],
+  Q2977: ['Dom', 1500, 'kirchen'], Q16970: ['Kirche', 600, 'kirchen'], Q108325: ['Kapelle', 150, 'kirchen'], Q44613: ['Kloster', 600, 'kirchen'],
+  Q32815: ['Moschee', 600, 'kirchen'], Q34627: ['Synagoge', 300, 'kirchen'],
+  Q38720: ['Windmühle', 600, 'technik'], Q185187: ['Wassermühle', 300, 'technik'], Q44494: ['Mühle', 300, 'technik'],
+  Q1248784: ['Flughafen', 1500, 'technik'], Q62447: ['Flugplatz', 1500, 'technik'], Q695850: ['Flugplatz', 1500, 'technik'],
+  Q105731: ['Schleuse', 300, 'technik'], Q12280: ['Brücke', 150, 'technik'], Q274153: ['Wasserturm', 600, 'technik'],
+  Q39715: ['Leuchtturm', 1500, 'technik'], Q1440300: ['Aussichtsturm', 1500, 'natur'],
+  Q6017969: ['Aussichtspunkt', 200, 'natur'], Q34038: ['Wasserfall', 300, 'natur'], Q23397: ['See', 1500, 'natur'],
+  Q179049: ['Naturschutzgebiet', 1000, 'natur'], Q473972: ['Schutzgebiet', 1000, 'natur'], Q1821: ['Moor', 1000, 'natur'],
+  Q22698: ['Park', 150, 'natur'],
+  Q43501: ['Zoo', 600, 'tiere'],
+  Q132241: ['Festival', 1500, 'kurioses'], Q868557: ['Musikfestival', 1500, 'kurioses'],
+};
+
+function buildQuery(chunk) { return overpassQuery(bbox(chunk, 1600)); }
 // Fakten aus OSM-Tags, die beim Schreiben helfen
 function osmFacts(t) {
   const f = [];
@@ -296,7 +381,9 @@ const $ = (id) => document.getElementById(id);
 const fmtKm = (m) => (m / 1000).toFixed(2).replace('.', ',');
 const fmtS = (ms) => (ms / 1000).toFixed(1).replace('.', ',') + ' s';
 const CHARS_PER_SECOND = 14; // grobe Sprechgeschwindigkeit der iOS-Stimme
-let state = { tour: null, items: [] };
+let state = { tour: null, items: [], groups: null };
+const groupOn = (it) => !it.group || !state.groups || state.groups[it.group] !== false;
+const isActive = (it) => it.checked && groupOn(it);
 let route = [], cum = [];
 let job = null; // laufende Suche {controller, start, step}
 
@@ -514,19 +601,21 @@ async function search() {
       for (const el of json.elements) {
         const t = el.tags || {};
         const lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
-        if (!t.name || lat == null) { stats.noName++; continue; }
+        if (lat == null) { stats.noName++; continue; }
         const key = `${el.type}/${el.id}`;
         if (found.has(key)) continue;
         const cls = classify(t);
         if (!cls) { stats.noCat++; continue; }
         if (cls.skip) { stats.skipped++; continue; }
+        const name = fallbackName(t, cls);
+        if (!name) { stats.noName++; continue; }
         const pos = { latitude: lat, longitude: lon };
         const pr = projectOnRoute(pos, route, cum);
         if (pr.d > cls.corridor) { stats.far++; continue; }
         if (state.items.some((it) => it.source !== 'osm' && it.source !== 'wiki' && distance(it, pos) < 120)) { stats.own++; continue; }
-        const dup = [...found.values()].find((o) => o.name === t.name && distance(o, pos) < 150);
+        const dup = [...found.values()].find((o) => o.name === name && distance(o, pos) < 150);
         if (dup) { if (!dup.osm.wikipedia && t.wikipedia) dup.osm.wikipedia = t.wikipedia; if (!dup.osm.wikidata && t.wikidata) dup.osm.wikidata = t.wikidata; stats.dup++; continue; }
-        found.set(key, { id: `osm-${key}`, source: 'osm', checked: false, name: t.name, label: cls.label, latitude: lat, longitude: lon, desc: '', wikiText: '', wikiUrl: '', facts: osmFacts(t), osm: { wikipedia: t.wikipedia || '', wikidata: t.wikidata || '', link: `https://www.openstreetmap.org/${el.type}/${el.id}` } });
+        found.set(key, { id: `osm-${key}`, source: 'osm', checked: false, name, label: cls.label, group: cls.group, latitude: lat, longitude: lon, desc: '', wikiText: '', wikiUrl: '', facts: osmFacts(t), osm: { wikipedia: t.wikipedia || '', wikidata: t.wikidata || '', link: `https://www.openstreetmap.org/${el.type}/${el.id}` } });
         kept++;
       }
       log(`Abschnitt ${i + 1}: ${kept} neue Sehenswürdigkeiten in Reichweite`, kept ? 'ok' : '');
@@ -543,7 +632,7 @@ async function search() {
       setStatus(job.step, true, 0.5);
       const own = state.items.filter((it) => it.source !== 'osm' && it.source !== 'wiki');
       const sights = await wikiSights(route, own, getJsonLogged, (t) => log(t, 'ok'));
-      const list = sights.map((p) => ({ id: p.id, source: 'wiki', checked: !!p.desc, name: p.name, label: p.label, latitude: p.latitude, longitude: p.longitude,
+      const list = sights.map((p) => ({ id: p.id, source: 'wiki', checked: !!p.desc && p.group !== 'weitere', name: p.name, label: p.label, group: p.group, latitude: p.latitude, longitude: p.longitude,
         desc: p.desc, wikiText: p.desc, wikiUrl: `https://de.wikipedia.org/wiki/${encodeURIComponent(p.wikiTitle.replace(/ /g, '_'))}`, facts: p.wdDescription ? [`Wikidata: ${p.wdDescription}`] : [] }));
       state.items = state.items.filter((it) => it.source !== 'osm' && it.source !== 'wiki').concat(list);
       recalc(); render(true); save();
@@ -551,7 +640,7 @@ async function search() {
       setStatus(`Fertig: ${list.length} Sehenswürdigkeiten (Wikipedia)`, false, 1);
       return;
     }
-    log(`Aussortiert: ${stats.far} zu weit von der Strecke, ${stats.noCat} keine passende Art, ${stats.skipped} Stolpersteine/Gedenktafeln, ${stats.own} schon als eigener Wegpunkt, ${stats.dup} doppelt eingetragen`, 'dim');
+    log(`Aussortiert: ${stats.far} zu weit von der Strecke, ${stats.noCat} keine passende Art, ${stats.skipped} Stolpersteine/Gedenktafeln, ${stats.own} schon als eigener Wegpunkt, ${stats.dup} doppelt eingetragen, ${stats.noName} ohne Namen`, 'dim');
 
     const list = [...found.values()];
     const withWiki = list.filter((p) => p.osm.wikipedia || p.osm.wikidata);
@@ -601,18 +690,6 @@ async function search() {
    ================================================================ */
 const distanceToRoute = (p, r) => projectOnRoute(p, r, cumFor(r)).d;
 function cumFor(r) { const c = [0]; for (let i = 1; i < r.length; i++) c.push(c[i - 1] + distance(r[i - 1], r[i])); return c; }
-// Wikidata-Klasse → [Bezeichnung, max. Abstand zur Route in m]
-const WD_CLASSES = {
-  Q23413: ['Burg', 1500], Q751876: ['Schloss', 1500], Q16560: ['Palast', 600], Q2977: ['Dom', 1500],
-  Q16970: ['Kirche', 600], Q108325: ['Kapelle', 150], Q44613: ['Kloster', 600],
-  Q1440300: ['Aussichtsturm', 1500], Q39715: ['Leuchtturm', 1500], Q38720: ['Windmühle', 600], Q185187: ['Wassermühle', 300],
-  Q33506: ['Museum', 300], Q207694: ['Kunstmuseum', 300], Q4989906: ['Denkmal', 300], Q5003624: ['Gedenkstätte', 100],
-  Q82117: ['Stadttor', 600], Q12518: ['Turm', 600], Q109607: ['Ruine', 600], Q25550691: ['Rathaus', 300], Q543654: ['Rathaus', 300],
-  Q879050: ['Herrenhaus', 600], Q839954: ['Bodendenkmal', 300], Q34038: ['Wasserfall', 300], Q6017969: ['Aussichtspunkt', 200],
-  Q12280: ['Brücke', 150], Q39614: ['Friedhof', 300], Q57821: ['Festungsanlage', 600], Q32815: ['Moschee', 600],
-  Q34627: ['Synagoge', 300], Q22698: ['Park', 150], Q41176: ['historisches Gebäude', 100], Q3947: ['historisches Haus', 100],
-};
-
 const WIKI = 'https://de.wikipedia.org/w/api.php';
 const WD = 'https://www.wikidata.org/w/api.php';
 
@@ -711,12 +788,15 @@ async function wikiSights(route, exclude, getJson, log = () => {}) {
 
   const kept = [];
   for (const p of withQ) {
-    const c = classes[p.qid];
-    if (!c || !c.cls) { stats.noCat++; continue; }
-    const [label, corridor] = c.cls;
+    const c = classes[p.qid] || { cls: null, description: '' };
+    let cls = c.cls;
+    if (!cls && LANDSCAPE_WORDS.test(`${p.title} ${c.description}`)) cls = ['Landschaft', 1500, 'natur'];
+    // nicht einzuordnen: nicht verwerfen, sondern als „weitere (ungeprüft)“ zur Auswahl stellen
+    if (!cls) { stats.noCat++; cls = ['weiterer Ort', 1500, 'weitere']; }
+    const [label, corridor, group] = cls;
     if (p.d > corridor) { stats.far++; continue; }
     if (exclude.some((w) => distance(w, p) < 120)) { stats.own++; continue; }
-    kept.push({ ...p, label, corridor, wdDescription: c.description });
+    kept.push({ ...p, label, corridor, group, wdDescription: c.description });
   }
 
   // Einleitungstexte (20 je Abfrage)
@@ -727,12 +807,13 @@ async function wikiSights(route, exclude, getJson, log = () => {}) {
       if (p) p.extract = (pg.extract || '').trim();
     }
   }
-  log(`Wikipedia: ${kept.length} Sehenswürdigkeiten · aussortiert: ${stats.far} zu weit weg, ${stats.noCat} keine passende Art (z. B. Straße, Schule, Ortsteil), ${stats.noWd} ohne Wikidata, ${stats.own} schon eigener Wegpunkt`);
+  log(`Wikipedia: ${kept.length} Sehenswürdigkeiten · aussortiert: ${stats.far} zu weit weg, ${stats.noCat} nicht eingeordnet (unter „Weitere“), ${stats.noWd} ohne Wikidata, ${stats.own} schon eigener Wegpunkt`);
 
   return kept.map((p) => ({
     id: `wiki-${p.pageid}`,
     name: cleanTitle(p.title),
     label: p.label,
+    group: p.group,
     latitude: p.latitude,
     longitude: p.longitude,
     distanceToRoute: Math.round(p.d),
@@ -786,6 +867,7 @@ function drawMap(fit) {
   if (!state.tour) return;
   routeLayer = L.polyline(route.map((p) => [p.latitude, p.longitude]), { color: '#cf222e', weight: 4 }).addTo(map);
   for (const it of state.items) {
+    if (!groupOn(it)) continue;
     const color = !it.checked ? '#9aa4ae' : (it.source === 'osm' || it.source === 'wiki') ? '#e8780c' : it.source === 'manual' ? '#1a7f37' : '#1f6feb';
     const m = L.circleMarker([it.latitude, it.longitude], { radius: it.checked ? 8 : 5, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1 })
       .bindTooltip(`${it.name}${it.label ? ' · ' + it.label : ''}`).on('click', () => focusItem(it.id, true));
@@ -825,16 +907,29 @@ function render(fit) {
   renderTimeline();
   drawMap(fit);
 }
+function renderGroups() {
+  const bar = $('groupBar');
+  if (!state.groups) state.groups = Object.fromEntries(Object.keys(GROUPS).map((k) => [k, k !== 'weitere']));
+  if (!('weitere' in state.groups)) state.groups.weitere = false;
+  const counts = {};
+  for (const it of state.items) if (it.group) counts[it.group] = (counts[it.group] || 0) + 1;
+  bar.innerHTML = 'Arten: ' + Object.entries(GROUPS).map(([k, name]) =>
+    `<label class="inline"><input type="checkbox" data-group="${k}" ${state.groups[k] !== false ? 'checked' : ''}> ${name}${counts[k] ? ` (${counts[k]})` : ''}</label>`).join(' ');
+  bar.querySelectorAll('input').forEach((cb) => cb.addEventListener('change', () => { state.groups[cb.dataset.group] = cb.checked; render(); save(); }));
+}
 function renderList() {
+  renderGroups();
   const box = $('items');
   const onlyOn = $('onlyOn').checked;
-  const on = state.items.filter((i) => i.checked).length;
-  $('listSummary').textContent = state.tour ? `${on} von ${state.items.length} ausgewählt` : '';
+  const shown = state.items.filter(groupOn);
+  const on = shown.filter((i) => i.checked).length;
+  $('listSummary').textContent = state.tour ? `${on} von ${shown.length} ausgewählt` + (shown.length < state.items.length ? ` (${state.items.length - shown.length} ausgeblendet)` : '') : '';
   box.innerHTML = '';
   if (!state.tour) return;
   if (!state.items.length) { box.innerHTML = '<p class="meta">Noch keine Einträge. „Sehenswürdigkeiten suchen“ oder Doppelklick auf die Karte.</p>'; return; }
   state.items.forEach((it, idx) => {
     if (onlyOn && !it.checked) return;
+    if (!groupOn(it)) return;
     const card = document.createElement('div');
     card.className = `card${it.checked ? '' : ' off'}`;
     card.dataset.id = it.id;
@@ -844,7 +939,7 @@ function renderList() {
       <div class="head">
         <input type="checkbox" class="chk" ${it.checked ? 'checked' : ''} title="in die Reiseführer-GPX übernehmen">
         <input type="text" class="name" value="${escapeHtml(it.name)}">
-        ${it.label ? `<span class="badge">${escapeHtml(it.label)}</span>` : ''}
+        ${it.label ? `<span class="badge" title="${escapeHtml(GROUPS[it.group] || '')}">${escapeHtml(it.label)}</span>` : ''}
         <span class="badge ${it.source}">${src}</span>
       </div>
       <div class="meta">km ${fmtKm(it.km)} · ${it.distanceToRoute} m neben der Strecke · Ansage ab km ${it.triggerKm == null ? '–' : fmtKm(it.triggerKm)} (Radius ${it.radius} m)</div>
@@ -890,7 +985,7 @@ function renderTimeline() {
   const pane = $('pane-timeline');
   if (!state.tour) { pane.innerHTML = ''; return; }
   const speed = Math.max(3, +$('speed').value || 18) / 3.6; // m/s
-  const on = state.items.filter((i) => i.checked && i.triggerKm != null).sort((a, b) => a.triggerKm - b.triggerKm);
+  const on = state.items.filter((i) => isActive(i) && i.triggerKm != null).sort((a, b) => a.triggerKm - b.triggerKm);
   let conflicts = 0;
   const rows = on.map((it, i) => {
     const dur = speechSeconds(it);
@@ -919,7 +1014,7 @@ document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('cli
 const xmlEsc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 function buildGpx() {
   const raw = state.tour.raw.replace(/\s*<(?:[\w-]+:)?wpt\b[^>]*?\/>/g, '').replace(/\s*<(?:[\w-]+:)?wpt\b[\s\S]*?<\/(?:[\w-]+:)?wpt>/g, '');
-  const sel = state.items.filter((i) => i.checked);
+  const sel = state.items.filter(isActive);
   const wpts = sel.map((i) => {
     const desc = [i.label, i.desc].filter(Boolean).join('. ');
     return ` <wpt lat="${i.latitude.toFixed(6)}" lon="${i.longitude.toFixed(6)}"><name>${xmlEsc(i.name)}</name>${desc ? `<desc>${xmlEsc(desc)}</desc>` : ''}</wpt>\n`;
@@ -928,7 +1023,7 @@ function buildGpx() {
   return m ? raw.slice(0, m.index) + '\n' + wpts + raw.slice(m.index).replace(/^\n/, '') : raw.replace(/<\/(?:[\w-]+:)?gpx>/, wpts + '</gpx>');
 }
 $('btnExport').addEventListener('click', () => {
-  const sel = state.items.filter((i) => i.checked);
+  const sel = state.items.filter(isActive);
   const gpx = buildGpx();
   const base = state.tour.fileName.replace(/\.gpx$/i, '').replace(/-Reisefuehrer$/, '');
   const a = document.createElement('a');
@@ -947,7 +1042,7 @@ $('btnClaude').addEventListener('click', () => {
     '',
     '## Ausgewählte Orte',
   ];
-  for (const it of state.items.filter((i) => i.checked)) {
+  for (const it of state.items.filter(isActive)) {
     lines.push('', `### ${it.name}${it.label ? ` (${it.label})` : ''}`);
     lines.push(`- Position: ${it.latitude.toFixed(6)}, ${it.longitude.toFixed(6)} · km ${fmtKm(it.km)} · ${it.distanceToRoute} m neben der Strecke · Ansage ab km ${it.triggerKm == null ? '–' : fmtKm(it.triggerKm)}`);
     if (it.wikiUrl) lines.push(`- Wikipedia: ${it.wikiUrl}`);
