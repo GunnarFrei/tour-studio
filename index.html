@@ -1028,6 +1028,7 @@ function fixRow(row, action) {
   if (action === 'shorten' && !shortenToFit(row)) { alert('Selbst der erste Satz ist zu lang – zusammenfassen oder abwählen.'); return; }
   if (action === 'merge') { mergeItems(row.it, row.next); return; }
   if (action === 'drop') { row.next.checked = false; log(`Abgewählt: „${row.next.name}“`, 'ok'); }
+  if (action === 'dropThis') { row.it.checked = false; log(`Abgewählt: „${row.it.name}“`, 'ok'); }
   recalc(); render(); save();
 }
 function autoFix() {
@@ -1056,8 +1057,8 @@ function renderTimeline() {
     ${conflicts ? `<p class="warn">${conflicts} Überschneidung(en) <button id="btnAutoFix">Alle automatisch beheben</button></p>` : rows.length ? '<p style="color:var(--green)">Keine Überschneidungen.</p>' : ''}
     <table><thead><tr><th>ab km</th><th>Ansage</th><th>Dauer</th><th>endet km</th><th></th></tr></thead><tbody>
     ${rows.map((r, i) => `<tr class="${r.clash ? 'conflict' : ''}" data-i="${i}"><td>${fmtKm(r.it.triggerKm)}</td><td class="tl-name">${escapeHtml(r.it.name)}</td><td>${r.dur} s</td><td>${fmtKm(r.endM)}</td>
-      <td>${r.clash ? `<span class="warn">überschneidet sich mit „${escapeHtml(r.next.name)}“ (${Math.round(r.endM - r.next.triggerKm)} m)</span>
-        <div class="row"><button data-act="shorten">Kürzen</button><button data-act="merge">Zusammenfassen</button><button data-act="drop">Nächsten abwählen</button></div>` : ''}</td></tr>`).join('')}
+      <td>${r.clash ? `<span class="warn">überschneidet sich mit „${escapeHtml(r.next.name)}“ (${Math.round(r.endM - r.next.triggerKm)} m)</span>` : ''}
+        <div class="row">${r.clash ? '<button data-act="shorten">Kürzen</button><button data-act="merge">Zusammenfassen</button><button data-act="drop">Nächsten abwählen</button>' : ''}<button data-act="dropThis" title="diese Ansage aus der Auswahl nehmen">Abwählen</button></div></td></tr>`).join('')}
     </tbody></table>`;
   $('btnAutoFix')?.addEventListener('click', autoFix);
   pane.querySelectorAll('tr[data-i]').forEach((tr) => {
