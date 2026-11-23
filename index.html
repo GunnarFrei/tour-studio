@@ -1,0 +1,962 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tour-Studio – GPX-Reiseführer</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --line: #dde1e6; --text: #1d2228; --muted: #66707a;
+    --blue: #1f6feb; --orange: #e8780c; --green: #1a7f37; --red: #cf222e; --amber: #9a6700;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--text); background: var(--bg); }
+  body { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0 12px 0 0; }
+  header .tour { color: var(--muted); margin-right: auto; }
+  button, .btn { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: #fff; cursor: pointer; white-space: nowrap; }
+  button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  button.danger { color: var(--red); }
+  button:disabled { opacity: .5; cursor: default; }
+  label.inline { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+  input[type=number] { width: 64px; font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
+  main { display: grid; grid-template-columns: 1fr 520px; min-height: 0; }
+  #map { min-height: 0; background: #e9ecef; position: relative; }
+  #map .placeholder { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 20px; }
+  aside { display: grid; grid-template-rows: auto 1fr; min-height: 0; border-left: 1px solid var(--line); background: var(--panel); }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); }
+  .tabs button { border: 0; border-radius: 0; padding: 10px 14px; background: none; color: var(--muted); border-bottom: 2px solid transparent; }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--blue); font-weight: 600; }
+  .tabpane { overflow: auto; padding: 10px 12px; min-height: 0; }
+  .hidden { display: none !important; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; color: var(--muted); }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; background: #fff; }
+  .card.off { background: #fafbfc; }
+  .card.off .body { display: none; }
+  .card .preview { display: none; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card.off .preview { display: block; }
+  .card.focus { outline: 2px solid var(--blue); }
+  .card .head { display: flex; gap: 8px; align-items: center; }
+  .card .head input[type=text] { flex: 1; font: inherit; font-weight: 600; border: 1px solid transparent; padding: 2px 4px; border-radius: 4px; }
+  .card .head input[type=text]:hover, .card .head input[type=text]:focus { border-color: var(--line); }
+  .badge { font-size: 12px; padding: 1px 7px; border-radius: 10px; background: #eef1f4; color: var(--muted); white-space: nowrap; }
+  .badge.gpx { background: #ddeafd; color: var(--blue); }
+  .badge.osm { background: #fde9d7; color: #a4520a; }
+  .badge.wiki { background: #ece6fb; color: #6639ba; }
+  .badge.manual { background: #e3f4e6; color: var(--green); }
+  .meta { color: var(--muted); font-size: 12.5px; margin: 4px 0; }
+  .facts { font-size: 12.5px; color: #3d454d; margin: 4px 0; }
+  textarea { width: 100%; min-height: 96px; font: inherit; font-size: 13.5px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; resize: vertical; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 6px; }
+  .row button { padding: 3px 9px; font-size: 13px; }
+  .row .count { margin-left: auto; color: var(--muted); font-size: 12px; }
+  a { color: var(--blue); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr.conflict td { background: #fff1f0; }
+  .warn { color: var(--red); font-weight: 600; }
+  #logbar { background: #11161c; color: #d7dde4; display: grid; grid-template-rows: auto 1fr; height: 230px; }
+  #logbar.collapsed { height: 34px; }
+  #logbar .top { display: flex; gap: 12px; align-items: center; padding: 6px 12px; border-bottom: 1px solid #262e38; }
+  #logbar .top b { color: #fff; }
+  #status { flex: 1; color: #9fb0c2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #status.busy::before { content: "● "; color: #f0b429; }
+  .progress { width: 180px; height: 6px; background: #262e38; border-radius: 3px; overflow: hidden; }
+  .progress > div { height: 100%; width: 0; background: #3fb950; transition: width .2s; }
+  #logbar .top button { background: #1f2630; color: #d7dde4; border-color: #333d49; padding: 3px 10px; }
+  #log { overflow: auto; padding: 6px 12px; font: 12.5px/1.5 ui-monospace, Consolas, monospace; }
+  #log .l-ok { color: #56d364; } #log .l-warn { color: #e3b341; } #log .l-err { color: #ff7b72; } #log .l-dim { color: #7d8b99; }
+  #log .t { color: #6e7b88; }
+  dialog { border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: min(760px, 92vw); }
+  dialog textarea { min-height: 360px; font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .drop { position: fixed; inset: 0; background: rgba(31,111,235,.12); border: 3px dashed var(--blue); display: flex; align-items: center; justify-content: center; font-size: 22px; color: var(--blue); z-index: 9999; pointer-events: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Tour-Studio</h1>
+  <span class="tour" id="tourInfo">Keine Tour geladen</span>
+  <label class="btn" for="fileInput">GPX öffnen</label>
+  <input type="file" id="fileInput" accept=".gpx" class="hidden">
+  <button id="btnSearch" class="primary" disabled>Sehenswürdigkeiten suchen</button>
+  <button id="btnCancel" class="hidden danger">Abbrechen</button>
+  <label class="inline">Tempo <input type="number" id="speed" value="18" min="5" max="45"> km/h</label>
+  <button id="btnClaude" disabled title="Liste als Text für den Chat mit Claude">Für Claude kopieren</button>
+  <button id="btnExport" disabled>Reiseführer-GPX speichern</button>
+</header>
+
+<main>
+  <div id="map"><div class="placeholder">GPX-Datei öffnen oder hierher ziehen.<br>Doppelklick auf die Karte setzt einen eigenen Punkt.</div></div>
+  <aside>
+    <div class="tabs">
+      <button data-tab="list" class="active">Ansagen</button>
+      <button data-tab="timeline">Zeitplan</button>
+    </div>
+    <div class="tabpane" id="pane-list">
+      <div class="toolbar">
+        <label class="inline"><input type="checkbox" id="onlyOn"> nur ausgewählte</label>
+        <span id="listSummary"></span>
+      </div>
+      <div id="items"></div>
+    </div>
+    <div class="tabpane hidden" id="pane-timeline"></div>
+  </aside>
+</main>
+
+<section id="logbar">
+  <div class="top">
+    <b>Protokoll</b>
+    <span id="status">Bereit</span>
+    <div class="progress"><div id="progress"></div></div>
+    <button id="btnLogCopy">Kopieren</button>
+    <button id="btnLogClear">Leeren</button>
+    <button id="btnLogToggle">Einklappen</button>
+  </div>
+  <div id="log"></div>
+</section>
+
+<dialog id="dlg">
+  <h3 id="dlgTitle" style="margin-top:0"></h3>
+  <p id="dlgHint" style="color:var(--muted)"></p>
+  <textarea id="dlgText"></textarea>
+  <div class="row" style="justify-content:flex-end">
+    <button id="dlgCopy" class="primary">In Zwischenablage kopieren</button>
+    <button id="dlgClose">Schließen</button>
+  </div>
+</dialog>
+
+<script>
+'use strict';
+/* ================================================================
+   Geo- und GPX-Funktionen (gleiche Logik wie in der iPhone-App)
+   ================================================================ */
+const R_EARTH = 6371000;
+function distance(a, b) {
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude), dLon = toRad(b.longitude - a.longitude);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.latitude)) * Math.cos(toRad(b.latitude)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R_EARTH * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+function simplifyRoute(points, minSpacing) {
+  if (!points.length) return [];
+  const out = [points[0]];
+  for (const p of points) if (distance(out[out.length - 1], p) >= minSpacing) out.push(p);
+  if (out[out.length - 1] !== points[points.length - 1]) out.push(points[points.length - 1]);
+  return out;
+}
+function bbox(points, marginM) {
+  let s = 90, w = 180, n = -90, e = -180;
+  for (const p of points) { s = Math.min(s, p.latitude); n = Math.max(n, p.latitude); w = Math.min(w, p.longitude); e = Math.max(e, p.longitude); }
+  const dLat = marginM / 111320, dLon = marginM / (111320 * Math.cos(((s + n) / 2) * Math.PI / 180));
+  return [s - dLat, w - dLon, n + dLat, e + dLon].map((v) => Number(v.toFixed(5)));
+}
+// Projektion auf die Route: Abstand und Position (Meter ab Start)
+function projectOnRoute(p, route, cum) {
+  const kx = 111320 * Math.cos(p.latitude * Math.PI / 180), ky = 110540;
+  let best = { d: Infinity, at: 0 };
+  for (let i = 1; i < route.length; i++) {
+    const ax = (route[i - 1].longitude - p.longitude) * kx, ay = (route[i - 1].latitude - p.latitude) * ky;
+    const bx = (route[i].longitude - p.longitude) * kx, by = (route[i].latitude - p.latitude) * ky;
+    const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2));
+    const d = Math.hypot(ax + t * dx, ay + t * dy);
+    if (d < best.d) best = { d, at: cum[i - 1] + t * (cum[i] - cum[i - 1]) };
+  }
+  return best;
+}
+// erster Routenpunkt, an dem der Auslöse-Radius erreicht wird
+function triggerAt(p, radius, route, cum) {
+  for (let i = 0; i < route.length; i++) if (distance(route[i], p) <= radius) return cum[i];
+  return null;
+}
+
+function decodeXml(raw) {
+  if (raw == null) return '';
+  const cdata = raw.match(/<!\[CDATA\[([\s\S]*?)\]\]>/);
+  let s = cdata ? cdata[1] : raw;
+  if (!cdata) s = s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(+n)).replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&amp;/g, '&');
+  return s.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, ' ').replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim();
+}
+const childText = (xml, tag) => { const m = xml.match(new RegExp(`<(?:[\\w-]+:)?${tag}\\b[^>]*>([\\s\\S]*?)</(?:[\\w-]+:)?${tag}>`)); return m ? decodeXml(m[1]) : ''; };
+const attr = (attrs, name) => { const m = attrs.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`)); return m ? m[1].trim() : null; };
+function coord(attrs) {
+  const la = attr(attrs, 'lat'), lo = attr(attrs, 'lon');
+  if (!la || !lo) return null;
+  const latitude = +la, longitude = +lo;
+  if (!isFinite(latitude) || !isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return null;
+  return { latitude, longitude };
+}
+function parseGpx(text, fileName) {
+  if (!/<(?:[\w-]+:)?gpx\b/.test(text)) throw new Error('Das ist keine GPX-Datei.');
+  if (!/<\/(?:[\w-]+:)?gpx>/.test(text)) throw new Error('Die GPX-Datei ist unvollständig.');
+  const blocks = (tag) => [...text.matchAll(new RegExp(`<(?:[\\w-]+:)?${tag}\\b[^>]*>([\\s\\S]*?)</(?:[\\w-]+:)?${tag}>`, 'g'))].map((m) => m[1]);
+  const pts = (block, tag) => [...block.matchAll(new RegExp(`<(?:[\\w-]+:)?${tag}\\b([^>]*?)/?>`, 'g'))].map((m) => coord(m[1])).filter(Boolean);
+  const segments = [];
+  for (const b of blocks('trkseg')) { const p = pts(b, 'trkpt'); if (p.length > 1) segments.push(p); }
+  for (const b of blocks('rte')) { const p = pts(b, 'rtept'); if (p.length > 1) segments.push(p); }
+  const waypoints = [];
+  for (const m of text.matchAll(/<(?:[\w-]+:)?wpt\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:[\w-]+:)?wpt>)/g)) {
+    const c = coord(m[1]); if (!c) continue;
+    const inner = m[2] || '';
+    waypoints.push({ name: childText(inner, 'name') || `Wegpunkt ${waypoints.length + 1}`, desc: childText(inner, 'desc') || childText(inner, 'cmt'), ...c });
+  }
+  if (!segments.length) throw new Error('Die Datei enthält keine Strecke (trk/rte).');
+  const meta = text.match(/<(?:[\w-]+:)?metadata\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?metadata>/);
+  const trk = text.match(/<(?:[\w-]+:)?trk\b[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?trk>/);
+  const name = (meta && childText(meta[1], 'name')) || (trk && childText(trk[1].replace(/<(?:[\w-]+:)?trkseg\b[\s\S]*/, ''), 'name')) || fileName.replace(/\.gpx$/i, '');
+  return { name, segments, waypoints };
+}
+
+/* ================================================================
+   Kategorien: Bezeichnung + maximale Entfernung zur Route
+   ================================================================ */
+function classify(t) {
+  const h = t.historic, b = t.building;
+  if (h === 'castle') return { label: t.castle_type === 'palace' || t.castle_type === 'manor' ? 'Schloss' : 'Burg', corridor: 1500 };
+  if (b === 'cathedral') return { label: 'Dom', corridor: 1500 };
+  if (t['tower:type'] === 'observation') return { label: 'Aussichtsturm', corridor: 1500 };
+  if (t.man_made === 'lighthouse') return { label: 'Leuchtturm', corridor: 1500 };
+  if (t.amenity === 'place_of_worship') {
+    if (b === 'chapel' || t.place_of_worship === 'chapel') return { label: 'Kapelle', corridor: 150 };
+    if (b === 'church' || b === 'basilica') return { label: 'Kirche', corridor: 600 };
+    if (b === 'mosque') return { label: 'Moschee', corridor: 600 };
+    if (b === 'synagogue') return { label: 'Synagoge', corridor: 300 };
+    if (b && b !== 'yes') return null;
+    return { label: !t.religion || t.religion === 'christian' ? 'Kirche' : 'Gotteshaus', corridor: 300 };
+  }
+  if (h === 'monastery' || t.amenity === 'monastery') return { label: 'Kloster', corridor: 600 };
+  if (h === 'palace' || h === 'manor') return { label: h === 'palace' ? 'Schloss' : 'Herrenhaus', corridor: 600 };
+  if (h === 'ruins') return { label: 'Ruine', corridor: 600 };
+  if (h === 'tower') return { label: 'historischer Turm', corridor: 600 };
+  if (h === 'city_gate') return { label: 'Stadttor', corridor: 600 };
+  if (h === 'windmill' || t.man_made === 'windmill') return { label: 'Windmühle', corridor: 600 };
+  if (h === 'watermill' || t.man_made === 'watermill') return { label: 'Wassermühle', corridor: 300 };
+  if (t.tourism === 'museum') return { label: 'Museum', corridor: 300 };
+  if (t.amenity === 'townhall') return { label: 'historisches Rathaus', corridor: 300 };
+  if (t.tourism === 'viewpoint') return { label: 'Aussichtspunkt', corridor: 200 };
+  if (h === 'monument') return { label: 'Denkmal', corridor: 300 };
+  if (h === 'archaeological_site') return { label: 'Bodendenkmal', corridor: 300 };
+  if (h === 'fort') return { label: 'Festung', corridor: 600 };
+  if (t.natural === 'waterfall') return { label: 'Wasserfall', corridor: 300 };
+  if (t.tourism === 'attraction') return { label: 'Sehenswürdigkeit', corridor: 300 };
+  if (h === 'memorial') {
+    if (/stolperstein|plaque|stele|grave/.test(t['memorial:type'] || t.memorial || '')) return { skip: 'Stolperstein/Gedenktafel' };
+    return { label: 'Gedenkstätte', corridor: 100 };
+  }
+  if (h === 'building') return { label: 'historisches Gebäude', corridor: 100 };
+  if (h === 'mine') return { label: 'historisches Bergwerk', corridor: 150 };
+  return null;
+}
+function buildQuery(chunk) {
+  const [s, w, n, e] = bbox(chunk, 1600);
+  return `[out:json][timeout:60][bbox:${s},${w},${n},${e}];
+(
+nwr[historic~"^(castle|monastery|palace|manor|ruins|tower|city_gate|windmill|watermill|fort|monument|archaeological_site|memorial|building|mine)$"][name];
+nwr[amenity=place_of_worship][name];
+nwr[building=cathedral][name];
+nwr["tower:type"=observation][name];
+nwr[man_made~"^(lighthouse|windmill|watermill)$"][name];
+nwr[tourism~"^(museum|viewpoint|attraction)$"][name];
+nwr[amenity=townhall][name][historic];
+nwr[amenity=townhall][name][heritage];
+nwr[natural=waterfall][name];
+);
+out center tags;`;
+}
+// Fakten aus OSM-Tags, die beim Schreiben helfen
+function osmFacts(t) {
+  const f = [];
+  if (t.start_date) f.push(`Baujahr/Beginn: ${t.start_date}`);
+  if (t.architect) f.push(`Architekt: ${t.architect}`);
+  if (t.architecture) f.push(`Stil: ${t.architecture}`);
+  if (t.denomination) f.push(`Konfession: ${t.denomination}`);
+  if (t.heritage || t['heritage:operator']) f.push('Denkmalschutz');
+  if (t.height) f.push(`Höhe: ${t.height} m`);
+  if (t.inscription) f.push(`Inschrift: ${t.inscription}`);
+  if (t.description) f.push(`OSM-Beschreibung: ${t.description}`);
+  return f;
+}
+
+/* ================================================================
+   Zustand, Protokoll, Speichern
+   ================================================================ */
+const $ = (id) => document.getElementById(id);
+const fmtKm = (m) => (m / 1000).toFixed(2).replace('.', ',');
+const fmtS = (ms) => (ms / 1000).toFixed(1).replace('.', ',') + ' s';
+const CHARS_PER_SECOND = 14; // grobe Sprechgeschwindigkeit der iOS-Stimme
+let state = { tour: null, items: [] };
+let route = [], cum = [];
+let job = null; // laufende Suche {controller, start, step}
+
+function log(msg, level = '') {
+  const now = new Date();
+  const t = now.toLocaleTimeString('de-DE') + '.' + String(now.getMilliseconds()).padStart(3, '0');
+  const rel = job ? ` +${fmtS(Date.now() - job.start)}` : '';
+  const div = document.createElement('div');
+  div.className = level ? `l-${level}` : '';
+  div.innerHTML = `<span class="t">${t}${rel}</span>  ${escapeHtml(msg)}`;
+  $('log').appendChild(div);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]); }
+function setStatus(text, busy = false, progress = null) {
+  $('status').textContent = text;
+  $('status').classList.toggle('busy', busy);
+  if (progress != null) $('progress').style.width = `${Math.round(progress * 100)}%`;
+}
+function save() {
+  try { localStorage.setItem('tour-studio-v1', JSON.stringify(state)); } catch (e) { /* Speicher evtl. nicht verfügbar */ }
+}
+function restore() {
+  try {
+    const raw = localStorage.getItem('tour-studio-v1');
+    if (!raw) return false;
+    const s = JSON.parse(raw);
+    if (!s.tour) return false;
+    state = s;
+    return true;
+  } catch (e) { return false; }
+}
+
+/* ================================================================
+   Tour laden
+   ================================================================ */
+function setTour(text, fileName) {
+  const t = parseGpx(text, fileName);
+  state.tour = { name: t.name, fileName, raw: text, segments: t.segments };
+  state.items = t.waypoints.map((w, i) => ({ id: `gpx-${i}-${Date.now()}`, source: 'gpx', checked: true, name: w.name, label: '', latitude: w.latitude, longitude: w.longitude, desc: w.desc || '', wikiText: '', wikiUrl: '', facts: [] }));
+  prepareRoute();
+  recalc();
+  log(`GPX geladen: „${t.name}“ – ${t.segments.reduce((n, s) => n + s.length, 0)} Streckenpunkte, ${fmtKm(cum[cum.length - 1])} km, ${t.waypoints.length} vorhandene Wegpunkte`, 'ok');
+  render(true);
+  save();
+}
+function prepareRoute() {
+  route = state.tour ? state.tour.segments.flat() : [];
+  cum = [0];
+  for (let i = 1; i < route.length; i++) cum.push(cum[i - 1] + distance(route[i - 1], route[i]));
+}
+// Abstand, Position, Radius, Auslösepunkt für alle Einträge
+function recalc() {
+  for (const it of state.items) {
+    const pr = projectOnRoute(it, route, cum);
+    it.distanceToRoute = Math.round(pr.d);
+    it.km = pr.at;
+    it.radius = Math.max(150, it.distanceToRoute + 120);
+    it.triggerKm = triggerAt(it, it.radius, route, cum);
+  }
+  state.items.sort((a, b) => (a.km ?? 0) - (b.km ?? 0));
+}
+
+$('fileInput').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  if (f) await loadFile(f);
+  e.target.value = '';
+});
+async function loadFile(f) {
+  try { setTour(await f.text(), f.name); } catch (err) { log(`GPX konnte nicht gelesen werden: ${err.message}`, 'err'); alert(err.message); }
+}
+// Drag & Drop
+let dropEl = null;
+window.addEventListener('dragover', (e) => { e.preventDefault(); if (!dropEl) { dropEl = document.createElement('div'); dropEl.className = 'drop'; dropEl.textContent = 'GPX-Datei hier ablegen'; document.body.appendChild(dropEl); } });
+window.addEventListener('dragleave', (e) => { if (e.relatedTarget == null && dropEl) { dropEl.remove(); dropEl = null; } });
+window.addEventListener('drop', async (e) => { e.preventDefault(); if (dropEl) { dropEl.remove(); dropEl = null; } const f = e.dataTransfer.files[0]; if (f) await loadFile(f); });
+
+/* ================================================================
+   Suche: OpenStreetMap (Overpass) + Wikipedia/Wikidata
+   ================================================================ */
+const OVERPASS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function timedFetch(url, options, timeoutMs, waitingText) {
+  const ctrl = new AbortController();
+  const onAbort = () => ctrl.abort();
+  job.controller.signal.addEventListener('abort', onAbort);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const t0 = Date.now();
+  job.waiting = { text: waitingText, since: t0 };
+  try {
+    const res = await fetch(url, { ...options, signal: ctrl.signal });
+    const body = await res.text();
+    return { res, body, ms: Date.now() - t0 };
+  } catch (e) {
+    if (job.controller.signal.aborted) throw new Error('abgebrochen');
+    if (ctrl.signal.aborted) throw new Error(`keine Antwort nach ${fmtS(timeoutMs)} (Zeitüberschreitung)`);
+    throw new Error(`Netzwerkfehler: ${e.message}`);
+  } finally {
+    clearTimeout(timer);
+    job.controller.signal.removeEventListener('abort', onAbort);
+    job.waiting = null;
+  }
+}
+
+async function overpass(query, label) {
+  let lastErr;
+  // zwei Durchgänge über alle Server; kostenlose Server haben öfter kurze Aussetzer
+  // ein Durchgang über alle Server; danach übernimmt Wikipedia als Ersatzquelle
+  {
+    for (const url of OVERPASS) {
+      const host = new URL(url).host;
+      log(`${label}: Anfrage an ${host} …`, 'dim');
+      try {
+        const { res, body, ms } = await timedFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'data=' + encodeURIComponent(query) }, 30000, `wartet auf ${host} (${label})`);
+        const kb = (body.length / 1024).toFixed(0);
+        if (!res.ok) {
+          const hint = res.status === 429 ? ' – zu viele Anfragen' : (res.status === 502 || res.status === 503 || res.status === 504) ? ' – Server gestört/überlastet' : '';
+          throw new Error(`HTTP ${res.status} nach ${fmtS(ms)}${hint}`);
+        }
+        let json;
+        try { json = JSON.parse(body); } catch (e) { throw new Error(`keine gültige Antwort (${kb} kB, ${fmtS(ms)})`); }
+        if (json.remark && /error|timed out|out of memory/i.test(json.remark)) throw new Error(`Server meldet: ${json.remark.slice(0, 120)}`);
+        log(`${label}: Antwort von ${host} – HTTP ${res.status}, ${fmtS(ms)}, ${kb} kB, ${json.elements.length} Objekte`, 'ok');
+        return json;
+      } catch (e) {
+        if (e.message === 'abgebrochen') throw e;
+        lastErr = e;
+        log(`${label}: ${host} fehlgeschlagen – ${e.message}`, 'warn');
+      }
+    }
+  }
+  throw new Error(`OpenStreetMap nicht erreichbar (${lastErr.message})`);
+}
+
+async function wikiFor(item) {
+  let title = null;
+  const m = /^([a-z-]+):(.+)$/.exec(item.osm.wikipedia || '');
+  if (m && m[1] === 'de') title = m[2];
+  if (!title && item.osm.wikidata) {
+    const q = item.osm.wikidata;
+    const { res, body, ms } = await timedFetch(`https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${encodeURIComponent(q)}&props=sitelinks|descriptions&sitefilter=dewiki&languages=de&format=json&origin=*`, {}, 20000, `wartet auf Wikidata (${item.name})`);
+    if (!res.ok) throw new Error(`Wikidata HTTP ${res.status}`);
+    const ent = JSON.parse(body).entities?.[q];
+    title = ent?.sitelinks?.dewiki?.title || null;
+    const wd = ent?.descriptions?.de?.value;
+    if (wd) item.facts.push(`Wikidata: ${wd}`);
+    if (!title) { log(`  ${item.name}: kein deutscher Wikipedia-Artikel (Wikidata ${q}, ${fmtS(ms)})`, 'dim'); return; }
+  }
+  if (!title) return;
+  const { res, body, ms } = await timedFetch(`https://de.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replace(/ /g, '_'))}`, {}, 20000, `wartet auf Wikipedia (${item.name})`);
+  if (!res.ok) { log(`  ${item.name}: Wikipedia HTTP ${res.status} für „${title}“`, 'warn'); return; }
+  const data = JSON.parse(body);
+  item.wikiText = data.extract || '';
+  item.wikiUrl = data.content_urls?.desktop?.page || `https://de.wikipedia.org/wiki/${encodeURIComponent(title)}`;
+  if (!item.desc && item.wikiText) item.desc = item.wikiText;
+  log(`  ${item.name}: Wikipedia „${title}“ – ${item.wikiText.length} Zeichen (${fmtS(ms)})`, 'ok');
+}
+
+async function getJsonLogged(url, label) {
+  const host = new URL(url).host;
+  const { res, body, ms } = await timedFetch(url, {}, 30000, `wartet auf ${host} (${label})`);
+  if (!res.ok) throw new Error(`${label}: HTTP ${res.status} nach ${fmtS(ms)}`);
+  log(`  ${label}: ${host} – ${fmtS(ms)}, ${(body.length / 1024).toFixed(0)} kB`, 'dim');
+  return JSON.parse(body);
+}
+
+$('btnSearch').addEventListener('click', search);
+$('btnCancel').addEventListener('click', () => { if (job) { job.controller.abort(); log('Abbruch angefordert …', 'warn'); } });
+
+async function search() {
+  if (!state.tour || job) return;
+  job = { controller: new AbortController(), start: Date.now(), waiting: null };
+  $('btnSearch').disabled = true;
+  $('btnCancel').classList.remove('hidden');
+  const ticker = setInterval(() => {
+    if (!job) return;
+    const w = job.waiting ? ` – ${job.waiting.text}, seit ${fmtS(Date.now() - job.waiting.since)}` : '';
+    setStatus(`${job.step || 'läuft'} · gesamt ${fmtS(Date.now() - job.start)}${w}`, true);
+  }, 250);
+  try {
+    const simple = simplifyRoute(route, 150);
+    const CHUNK = 40;
+    const chunks = [];
+    for (let i = 0; i < simple.length; i += CHUNK - 1) chunks.push(simple.slice(i, i + CHUNK));
+    log(`Suche gestartet: ${fmtKm(cum[cum.length - 1])} km Route in ${chunks.length} Abschnitt(en)`, 'ok');
+
+    const found = new Map();
+    const stats = { far: 0, noCat: 0, skipped: 0, own: 0, dup: 0, noName: 0 };
+    let osmFailed = null;
+    try {
+    for (let i = 0; i < chunks.length; i++) {
+      job.step = `OpenStreetMap: Abschnitt ${i + 1}/${chunks.length}`;
+      setStatus(job.step, true, (i / chunks.length) * 0.5);
+      const [s, w, n, e] = bbox(chunks[i], 1600);
+      const area = (distance({ latitude: s, longitude: w }, { latitude: n, longitude: w }) * distance({ latitude: s, longitude: w }, { latitude: s, longitude: e })) / 1e6;
+      log(`Abschnitt ${i + 1}/${chunks.length}: Rechteck ${s},${w} – ${n},${e} (ca. ${area.toFixed(0)} km²)`, 'dim');
+      const json = await overpass(buildQuery(chunks[i]), `Abschnitt ${i + 1}/${chunks.length}`);
+      let kept = 0;
+      for (const el of json.elements) {
+        const t = el.tags || {};
+        const lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
+        if (!t.name || lat == null) { stats.noName++; continue; }
+        const key = `${el.type}/${el.id}`;
+        if (found.has(key)) continue;
+        const cls = classify(t);
+        if (!cls) { stats.noCat++; continue; }
+        if (cls.skip) { stats.skipped++; continue; }
+        const pos = { latitude: lat, longitude: lon };
+        const pr = projectOnRoute(pos, route, cum);
+        if (pr.d > cls.corridor) { stats.far++; continue; }
+        if (state.items.some((it) => it.source !== 'osm' && it.source !== 'wiki' && distance(it, pos) < 120)) { stats.own++; continue; }
+        const dup = [...found.values()].find((o) => o.name === t.name && distance(o, pos) < 150);
+        if (dup) { if (!dup.osm.wikipedia && t.wikipedia) dup.osm.wikipedia = t.wikipedia; if (!dup.osm.wikidata && t.wikidata) dup.osm.wikidata = t.wikidata; stats.dup++; continue; }
+        found.set(key, { id: `osm-${key}`, source: 'osm', checked: false, name: t.name, label: cls.label, latitude: lat, longitude: lon, desc: '', wikiText: '', wikiUrl: '', facts: osmFacts(t), osm: { wikipedia: t.wikipedia || '', wikidata: t.wikidata || '', link: `https://www.openstreetmap.org/${el.type}/${el.id}` } });
+        kept++;
+      }
+      log(`Abschnitt ${i + 1}: ${kept} neue Sehenswürdigkeiten in Reichweite`, kept ? 'ok' : '');
+    }
+    } catch (e) {
+      if (e.message === 'abgebrochen') throw e;
+      osmFailed = e;
+    }
+    if (osmFailed) {
+      log(`OpenStreetMap nicht verfügbar (${osmFailed.message}) – wechsle zur Ersatzquelle Wikipedia`, 'warn');
+      job.step = 'Wikipedia-Umkreissuche';
+      setStatus(job.step, true, 0.5);
+      const own = state.items.filter((it) => it.source !== 'osm' && it.source !== 'wiki');
+      const sights = await wikiSights(route, own, getJsonLogged, (t) => log(t, 'ok'));
+      const list = sights.map((p) => ({ id: p.id, source: 'wiki', checked: !!p.desc, name: p.name, label: p.label, latitude: p.latitude, longitude: p.longitude,
+        desc: p.desc, wikiText: p.desc, wikiUrl: `https://de.wikipedia.org/wiki/${encodeURIComponent(p.wikiTitle.replace(/ /g, '_'))}`, facts: p.wdDescription ? [`Wikidata: ${p.wdDescription}`] : [] }));
+      state.items = state.items.filter((it) => it.source !== 'osm' && it.source !== 'wiki').concat(list);
+      recalc(); render(true); save();
+      log(`Fertig nach ${fmtS(Date.now() - job.start)} (Quelle: Wikipedia): ${list.length} Funde, ${list.filter((p) => p.checked).length} vorausgewählt`, 'ok');
+      setStatus(`Fertig: ${list.length} Sehenswürdigkeiten (Wikipedia)`, false, 1);
+      return;
+    }
+    log(`Aussortiert: ${stats.far} zu weit von der Strecke, ${stats.noCat} keine passende Art, ${stats.skipped} Stolpersteine/Gedenktafeln, ${stats.own} schon als eigener Wegpunkt, ${stats.dup} doppelt eingetragen`, 'dim');
+
+    const list = [...found.values()];
+    const withWiki = list.filter((p) => p.osm.wikipedia || p.osm.wikidata);
+    log(`${list.length} Sehenswürdigkeiten gefunden, davon ${withWiki.length} mit Wikipedia/Wikidata-Verweis – lade Texte …`, 'ok');
+    let done = 0;
+    const queue = [...withWiki];
+    const worker = async () => {
+      while (queue.length) {
+        const p = queue.shift();
+        try { await wikiFor(p); } catch (e) { if (e.message === 'abgebrochen') throw e; log(`  ${p.name}: ${e.message}`, 'warn'); }
+        done++;
+        job.step = `Wikipedia: ${done}/${withWiki.length}`;
+        setStatus(job.step, true, 0.5 + 0.5 * (done / Math.max(1, withWiki.length)));
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
+
+    // gleicher Wikipedia-Artikel = gleicher Ort (z. B. Kirche und Kloster): nur den nächsten behalten
+    const byArticle = new Map();
+    for (const p of [...list].sort((a, b) => projectOnRoute(a, route, cum).d - projectOnRoute(b, route, cum).d)) {
+      if (!p.wikiUrl) continue;
+      const first = byArticle.get(p.wikiUrl);
+      if (first) { log(`Doppelt: „${p.name}“ beschreibt dasselbe wie „${first.name}“ – entfernt`, 'dim'); list.splice(list.indexOf(p), 1); }
+      else byArticle.set(p.wikiUrl, p);
+    }
+    // mit Text vorauswählen; alte OSM-Funde ersetzen
+    for (const p of list) p.checked = !!p.wikiText;
+    state.items = state.items.filter((it) => it.source !== 'osm' && it.source !== 'wiki').concat(list);
+    recalc();
+    render(true);
+    save();
+    log(`Fertig nach ${fmtS(Date.now() - job.start)}: ${list.length} Funde, ${list.filter((p) => p.checked).length} mit Wikipedia-Text vorausgewählt`, 'ok');
+    setStatus(`Fertig: ${list.length} Sehenswürdigkeiten`, false, 1);
+  } catch (e) {
+    log(`Suche beendet: ${e.message}`, e.message === 'abgebrochen' ? 'warn' : 'err');
+    setStatus(`Fehler: ${e.message}`, false);
+  } finally {
+    clearInterval(ticker);
+    job = null;
+    $('btnSearch').disabled = !state.tour;
+    $('btnCancel').classList.add('hidden');
+  }
+}
+
+/* ================================================================
+   Ersatzquelle Wikipedia (gleiche Logik wie reisefuehrer/src/wikisights.js)
+   ================================================================ */
+const distanceToRoute = (p, r) => projectOnRoute(p, r, cumFor(r)).d;
+function cumFor(r) { const c = [0]; for (let i = 1; i < r.length; i++) c.push(c[i - 1] + distance(r[i - 1], r[i])); return c; }
+// Wikidata-Klasse → [Bezeichnung, max. Abstand zur Route in m]
+const WD_CLASSES = {
+  Q23413: ['Burg', 1500], Q751876: ['Schloss', 1500], Q16560: ['Palast', 600], Q2977: ['Dom', 1500],
+  Q16970: ['Kirche', 600], Q108325: ['Kapelle', 150], Q44613: ['Kloster', 600],
+  Q1440300: ['Aussichtsturm', 1500], Q39715: ['Leuchtturm', 1500], Q38720: ['Windmühle', 600], Q185187: ['Wassermühle', 300],
+  Q33506: ['Museum', 300], Q207694: ['Kunstmuseum', 300], Q4989906: ['Denkmal', 300], Q5003624: ['Gedenkstätte', 100],
+  Q82117: ['Stadttor', 600], Q12518: ['Turm', 600], Q109607: ['Ruine', 600], Q25550691: ['Rathaus', 300], Q543654: ['Rathaus', 300],
+  Q879050: ['Herrenhaus', 600], Q839954: ['Bodendenkmal', 300], Q34038: ['Wasserfall', 300], Q6017969: ['Aussichtspunkt', 200],
+  Q12280: ['Brücke', 150], Q39614: ['Friedhof', 300], Q57821: ['Festungsanlage', 600], Q32815: ['Moschee', 600],
+  Q34627: ['Synagoge', 300], Q22698: ['Park', 150], Q41176: ['historisches Gebäude', 100], Q3947: ['historisches Haus', 100],
+};
+
+const WIKI = 'https://de.wikipedia.org/w/api.php';
+const WD = 'https://www.wikidata.org/w/api.php';
+
+function cleanTitle(title) {
+  return title.replace(/\s*\([^)]*\)\s*$/, '').trim();
+}
+
+function chunked(arr, n) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+
+async function pool(items, n, fn) {
+  const queue = [...items];
+  await Promise.all(Array.from({ length: n }, async () => {
+    while (queue.length) await fn(queue.shift());
+  }));
+}
+
+// Kategorie über P31 (ist ein) und bis zu zwei Ebenen P279 (Unterklasse von)
+async function classifyAll(qids, getJson) {
+  const p31 = {};
+  for (const batch of chunked(qids, 50)) {
+    const data = await getJson(`${WD}?action=wbgetentities&ids=${batch.join('|')}&props=claims|descriptions&languages=de&format=json&origin=*`, 'Wikidata');
+    for (const [id, ent] of Object.entries(data.entities || {})) {
+      const claims = ent.claims?.P31 || [];
+      p31[id] = {
+        classes: claims.map((c) => c.mainsnak?.datavalue?.value?.id).filter(Boolean),
+        description: ent.descriptions?.de?.value || '',
+      };
+    }
+  }
+  const parents = {}; // Klasse → Oberklassen
+  let unknown = new Set(Object.values(p31).flatMap((e) => e.classes).filter((c) => !WD_CLASSES[c]));
+  for (let level = 0; level < 2 && unknown.size; level++) {
+    const next = new Set();
+    for (const batch of chunked([...unknown], 50)) {
+      const data = await getJson(`${WD}?action=wbgetentities&ids=${batch.join('|')}&props=claims&format=json&origin=*`, 'Wikidata-Klassen');
+      for (const [id, ent] of Object.entries(data.entities || {})) {
+        parents[id] = (ent.claims?.P279 || []).map((c) => c.mainsnak?.datavalue?.value?.id).filter(Boolean);
+        for (const p of parents[id]) if (!WD_CLASSES[p] && !parents[p]) next.add(p);
+      }
+    }
+    unknown = next;
+  }
+  const resolve = (cls, depth = 0) => {
+    if (WD_CLASSES[cls]) return WD_CLASSES[cls];
+    if (depth >= 2) return null;
+    for (const p of parents[cls] || []) {
+      const r = resolve(p, depth + 1);
+      if (r) return r;
+    }
+    return null;
+  };
+  const result = {};
+  for (const [id, e] of Object.entries(p31)) {
+    let best = null;
+    for (const c of e.classes) {
+      const r = resolve(c);
+      if (r && (!best || r[1] > best[1])) best = r;
+    }
+    result[id] = { cls: best, description: e.description };
+  }
+  return result;
+}
+
+// route: alle Streckenpunkte; exclude: eigene Wegpunkte; log(text, level)
+async function wikiSights(route, exclude, getJson, log = () => {}) {
+  // Suchkreise (Radius 1,6 km) alle 1,2 km decken einen 1,5-km-Streifen ab
+  const centers = simplifyRoute(route, 1200);
+  log(`Wikipedia-Umkreissuche an ${centers.length} Punkten entlang der Route …`);
+  const pages = new Map();
+  await pool(centers, 4, async (c) => {
+    const data = await getJson(`${WIKI}?action=query&list=geosearch&gscoord=${c.latitude.toFixed(5)}|${c.longitude.toFixed(5)}&gsradius=1600&gslimit=100&format=json&origin=*`, 'Wikipedia-Umkreis');
+    for (const g of data.query?.geosearch || []) {
+      if (!pages.has(g.pageid)) pages.set(g.pageid, { pageid: g.pageid, title: g.title, latitude: g.lat, longitude: g.lon });
+    }
+  });
+  const stats = { far: 0, own: 0, noCat: 0, noWd: 0 };
+  let cands = [...pages.values()];
+  for (const p of cands) p.d = distanceToRoute(p, route);
+  cands = cands.filter((p) => (p.d <= 1500 ? true : (stats.far++, false)));
+  log(`${pages.size} Wikipedia-Artikel im Umkreis, ${cands.length} nah genug an der Strecke`);
+
+  // Wikidata-Kennung je Artikel
+  for (const batch of chunked(cands, 50)) {
+    const data = await getJson(`${WIKI}?action=query&prop=pageprops&ppprop=wikibase_item&pageids=${batch.map((p) => p.pageid).join('|')}&format=json&origin=*`, 'Wikipedia-Seiten');
+    for (const pg of Object.values(data.query?.pages || {})) {
+      const p = cands.find((x) => x.pageid === pg.pageid);
+      if (p) p.qid = pg.pageprops?.wikibase_item || null;
+    }
+  }
+  const withQ = cands.filter((p) => (p.qid ? true : (stats.noWd++, false)));
+  const classes = await classifyAll([...new Set(withQ.map((p) => p.qid))], getJson);
+
+  const kept = [];
+  for (const p of withQ) {
+    const c = classes[p.qid];
+    if (!c || !c.cls) { stats.noCat++; continue; }
+    const [label, corridor] = c.cls;
+    if (p.d > corridor) { stats.far++; continue; }
+    if (exclude.some((w) => distance(w, p) < 120)) { stats.own++; continue; }
+    kept.push({ ...p, label, corridor, wdDescription: c.description });
+  }
+
+  // Einleitungstexte (20 je Abfrage)
+  for (const batch of chunked(kept, 20)) {
+    const data = await getJson(`${WIKI}?action=query&prop=extracts&exintro=1&explaintext=1&exlimit=20&pageids=${batch.map((p) => p.pageid).join('|')}&format=json&origin=*`, 'Wikipedia-Texte');
+    for (const pg of Object.values(data.query?.pages || {})) {
+      const p = kept.find((x) => x.pageid === pg.pageid);
+      if (p) p.extract = (pg.extract || '').trim();
+    }
+  }
+  log(`Wikipedia: ${kept.length} Sehenswürdigkeiten · aussortiert: ${stats.far} zu weit weg, ${stats.noCat} keine passende Art (z. B. Straße, Schule, Ortsteil), ${stats.noWd} ohne Wikidata, ${stats.own} schon eigener Wegpunkt`);
+
+  return kept.map((p) => ({
+    id: `wiki-${p.pageid}`,
+    name: cleanTitle(p.title),
+    label: p.label,
+    latitude: p.latitude,
+    longitude: p.longitude,
+    distanceToRoute: Math.round(p.d),
+    radius: Math.round(Math.max(150, p.d + 120)),
+    desc: p.extract || '',
+    wikiTitle: p.title,
+    wdDescription: p.wdDescription,
+    source: 'wikipedia',
+  }));
+}
+
+/* ================================================================
+   Karte
+   ================================================================ */
+let map = null, routeLayer = null, markerLayer = null, focusCircle = null;
+const markers = new Map();
+function initMap() {
+  if (typeof L === 'undefined') { $('map').querySelector('.placeholder').innerHTML = 'Karte nicht verfügbar (keine Internetverbindung zu unpkg.com).<br>Alles andere funktioniert trotzdem.'; return; }
+  $('map').innerHTML = '';
+  map = L.map('map', { doubleClickZoom: false }).setView([51.2, 10.4], 6);
+  // Hinweis: tile.openstreetmap.org sperrt Seiten, die als lokale Datei geöffnet werden (kein Referer).
+  const osmAttr = 'Daten © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende';
+  const layers = {
+    'Fahrradkarte (CyclOSM)': L.tileLayer('https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png', { maxZoom: 20, subdomains: 'abc', attribution: `${osmAttr} · Stil <a href="https://www.cyclosm.org">CyclOSM</a>` }),
+    'Topografisch (OpenTopoMap)': L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, subdomains: 'abc', attribution: `${osmAttr} · Stil © <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)` }),
+  };
+  let chosen = 'Fahrradkarte (CyclOSM)';
+  try { chosen = localStorage.getItem('tour-studio-layer') || chosen; } catch (e) { /* egal */ }
+  (layers[chosen] || layers['Fahrradkarte (CyclOSM)']).addTo(map);
+  L.control.layers(layers, null, { position: 'topright' }).addTo(map);
+  map.on('baselayerchange', (e) => { try { localStorage.setItem('tour-studio-layer', e.name); } catch (err) { /* egal */ } });
+  let tileErrors = 0;
+  for (const [name, layer] of Object.entries(layers)) {
+    layer.on('tileerror', () => { if (++tileErrors === 5) log(`Kartenkacheln von „${name}“ laden nicht – oben rechts eine andere Karte wählen.`, 'warn'); });
+  }
+  markerLayer = L.layerGroup().addTo(map);
+  map.on('dblclick', (e) => {
+    if (!state.tour) return;
+    const name = prompt('Name des eigenen Punkts:', 'Eigener Punkt');
+    if (!name) return;
+    const it = { id: `man-${Date.now()}`, source: 'manual', checked: true, name, label: '', latitude: e.latlng.lat, longitude: e.latlng.lng, desc: '', wikiText: '', wikiUrl: '', facts: [] };
+    state.items.push(it);
+    recalc(); render(); save(); focusItem(it.id);
+    log(`Eigener Punkt „${name}“ gesetzt`, 'ok');
+  });
+}
+function drawMap(fit) {
+  if (!map) return;
+  if (routeLayer) routeLayer.remove();
+  markerLayer.clearLayers(); markers.clear();
+  if (!state.tour) return;
+  routeLayer = L.polyline(route.map((p) => [p.latitude, p.longitude]), { color: '#cf222e', weight: 4 }).addTo(map);
+  for (const it of state.items) {
+    const color = !it.checked ? '#9aa4ae' : (it.source === 'osm' || it.source === 'wiki') ? '#e8780c' : it.source === 'manual' ? '#1a7f37' : '#1f6feb';
+    const m = L.circleMarker([it.latitude, it.longitude], { radius: it.checked ? 8 : 5, color: '#fff', weight: 2, fillColor: color, fillOpacity: 1 })
+      .bindTooltip(`${it.name}${it.label ? ' · ' + it.label : ''}`).on('click', () => focusItem(it.id, true));
+    m.addTo(markerLayer); markers.set(it.id, m);
+  }
+  if (fit) map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+}
+function focusItem(id, scroll) {
+  document.querySelectorAll('.card.focus').forEach((c) => c.classList.remove('focus'));
+  const card = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
+  if (card) { card.classList.add('focus'); if (scroll) card.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+  const it = state.items.find((i) => i.id === id);
+  if (map && it) {
+    if (focusCircle) focusCircle.remove();
+    focusCircle = L.circle([it.latitude, it.longitude], { radius: it.radius, color: '#1f6feb', weight: 1, fillOpacity: 0.08 }).addTo(map);
+    if (!scroll) map.setView([it.latitude, it.longitude], Math.max(map.getZoom(), 15));
+  }
+}
+
+/* ================================================================
+   Liste und Zeitplan
+   ================================================================ */
+const speechSeconds = (it) => Math.round(spoken(it).length / CHARS_PER_SECOND);
+function spoken(it) {
+  let intro = it.name;
+  if (it.label) intro += `, ${it.label}`;
+  if (it.distanceToRoute >= 300) intro += `, rund ${Math.round(it.distanceToRoute / 100) * 100} Meter neben der Strecke`;
+  return it.desc ? `${intro}. ${it.desc}` : intro;
+}
+function render(fit) {
+  const t = state.tour;
+  $('tourInfo').textContent = t ? `${t.name} · ${fmtKm(cum[cum.length - 1])} km` : 'Keine Tour geladen';
+  $('btnSearch').disabled = !t || !!job;
+  $('btnExport').disabled = !t;
+  $('btnClaude').disabled = !t;
+  renderList();
+  renderTimeline();
+  drawMap(fit);
+}
+function renderList() {
+  const box = $('items');
+  const onlyOn = $('onlyOn').checked;
+  const on = state.items.filter((i) => i.checked).length;
+  $('listSummary').textContent = state.tour ? `${on} von ${state.items.length} ausgewählt` : '';
+  box.innerHTML = '';
+  if (!state.tour) return;
+  if (!state.items.length) { box.innerHTML = '<p class="meta">Noch keine Einträge. „Sehenswürdigkeiten suchen“ oder Doppelklick auf die Karte.</p>'; return; }
+  state.items.forEach((it, idx) => {
+    if (onlyOn && !it.checked) return;
+    const card = document.createElement('div');
+    card.className = `card${it.checked ? '' : ' off'}`;
+    card.dataset.id = it.id;
+    const src = { gpx: 'aus GPX', osm: 'OpenStreetMap', wiki: 'Wikipedia', manual: 'eigener Punkt' }[it.source];
+    const sec = speechSeconds(it);
+    card.innerHTML = `
+      <div class="head">
+        <input type="checkbox" class="chk" ${it.checked ? 'checked' : ''} title="in die Reiseführer-GPX übernehmen">
+        <input type="text" class="name" value="${escapeHtml(it.name)}">
+        ${it.label ? `<span class="badge">${escapeHtml(it.label)}</span>` : ''}
+        <span class="badge ${it.source}">${src}</span>
+      </div>
+      <div class="meta">km ${fmtKm(it.km)} · ${it.distanceToRoute} m neben der Strecke · Ansage ab km ${it.triggerKm == null ? '–' : fmtKm(it.triggerKm)} (Radius ${it.radius} m)</div>
+      <div class="preview">${escapeHtml((it.desc || it.wikiText || (it.facts || []).join(' · ') || 'kein Text vorhanden').slice(0, 160))}</div>
+      <div class="body">
+        ${it.facts && it.facts.length ? `<div class="facts">${it.facts.map(escapeHtml).join(' · ')}</div>` : ''}
+        <textarea class="desc" placeholder="Text für die Ansage (leer = nur Name wird angesagt)">${escapeHtml(it.desc)}</textarea>
+        <div class="row">
+          <button class="show">Auf Karte</button>
+          ${it.wikiText && it.wikiText !== it.desc ? '<button class="usewiki">Wikipedia-Text übernehmen</button>' : ''}
+          ${it.wikiUrl ? `<a href="${escapeHtml(it.wikiUrl)}" target="_blank" rel="noopener">Wikipedia</a>` : ''}
+          ${it.osm ? `<a href="${escapeHtml(it.osm.link)}" target="_blank" rel="noopener">OSM</a>` : ''}
+          ${idx < state.items.length - 1 ? '<button class="merge" title="mit dem nächsten Eintrag zu einer Ansage zusammenfassen">↓ zusammenfassen</button>' : ''}
+          <button class="del danger">Entfernen</button>
+          <span class="count">${it.desc.length} Zeichen · ca. ${sec} s</span>
+        </div>
+      </div>`;
+    card.querySelector('.chk').addEventListener('change', (e) => { it.checked = e.target.checked; render(); save(); });
+    card.querySelector('.name').addEventListener('change', (e) => { it.name = e.target.value.trim() || it.name; renderTimeline(); drawMap(); save(); });
+    const ta = card.querySelector('.desc');
+    ta.addEventListener('input', () => { it.desc = ta.value; card.querySelector('.count').textContent = `${it.desc.length} Zeichen · ca. ${speechSeconds(it)} s`; renderTimeline(); save(); });
+    card.querySelector('.show').addEventListener('click', () => focusItem(it.id));
+    card.querySelector('.usewiki')?.addEventListener('click', () => { it.desc = it.wikiText; render(); save(); });
+    card.querySelector('.del').addEventListener('click', () => { state.items = state.items.filter((x) => x !== it); render(); save(); });
+    card.querySelector('.merge')?.addEventListener('click', () => mergeWithNext(idx));
+    box.appendChild(card);
+  });
+}
+function mergeWithNext(idx) {
+  const a = state.items[idx], b = state.items[idx + 1];
+  if (!a || !b) return;
+  a.name = `${a.name}, ${b.name}`;
+  a.desc = [a.desc, b.desc].filter(Boolean).join(' ');
+  a.label = '';
+  a.facts = [...(a.facts || []), ...(b.facts || [])];
+  a.checked = true;
+  if (a.source === 'osm' || a.source === 'wiki') a.source = 'manual';
+  state.items.splice(idx + 1, 1);
+  recalc(); render(); save();
+  log(`Zusammengefasst: „${a.name}“`, 'ok');
+}
+function renderTimeline() {
+  const pane = $('pane-timeline');
+  if (!state.tour) { pane.innerHTML = ''; return; }
+  const speed = Math.max(3, +$('speed').value || 18) / 3.6; // m/s
+  const on = state.items.filter((i) => i.checked && i.triggerKm != null).sort((a, b) => a.triggerKm - b.triggerKm);
+  let conflicts = 0;
+  const rows = on.map((it, i) => {
+    const dur = speechSeconds(it);
+    const endM = it.triggerKm + dur * speed;
+    const next = on[i + 1];
+    const clash = next && next.triggerKm < endM;
+    if (clash) conflicts++;
+    return `<tr class="${clash ? 'conflict' : ''}"><td>${fmtKm(it.triggerKm)}</td><td>${escapeHtml(it.name)}</td><td>${dur} s</td><td>${fmtKm(endM)}</td><td>${clash ? `<span class="warn">überschneidet sich mit „${escapeHtml(next.name)}“ (${Math.round(endM - next.triggerKm)} m)</span>` : ''}</td></tr>`;
+  });
+  pane.innerHTML = `
+    <p class="meta">Bei ${(+$('speed').value || 18)} km/h und geschätzt ${CHARS_PER_SECOND} Zeichen pro Sekunde Sprechtempo. Eine neue Ansage bricht die laufende ab.</p>
+    ${conflicts ? `<p class="warn">${conflicts} Überschneidung(en) – Text kürzen, Einträge zusammenfassen oder abwählen.</p>` : on.length ? '<p style="color:var(--green)">Keine Überschneidungen.</p>' : ''}
+    <table><thead><tr><th>ab km</th><th>Ansage</th><th>Dauer</th><th>endet km</th><th></th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+}
+$('speed').addEventListener('input', renderTimeline);
+$('onlyOn').addEventListener('change', renderList);
+document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => {
+  document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('active', x === b));
+  $('pane-list').classList.toggle('hidden', b.dataset.tab !== 'list');
+  $('pane-timeline').classList.toggle('hidden', b.dataset.tab !== 'timeline');
+}));
+
+/* ================================================================
+   Export
+   ================================================================ */
+const xmlEsc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function buildGpx() {
+  const raw = state.tour.raw.replace(/\s*<(?:[\w-]+:)?wpt\b[^>]*?\/>/g, '').replace(/\s*<(?:[\w-]+:)?wpt\b[\s\S]*?<\/(?:[\w-]+:)?wpt>/g, '');
+  const sel = state.items.filter((i) => i.checked);
+  const wpts = sel.map((i) => {
+    const desc = [i.label, i.desc].filter(Boolean).join('. ');
+    return ` <wpt lat="${i.latitude.toFixed(6)}" lon="${i.longitude.toFixed(6)}"><name>${xmlEsc(i.name)}</name>${desc ? `<desc>${xmlEsc(desc)}</desc>` : ''}</wpt>\n`;
+  }).join('');
+  const m = raw.match(/\n?\s*<(?:[\w-]+:)?(?:trk|rte)\b/);
+  return m ? raw.slice(0, m.index) + '\n' + wpts + raw.slice(m.index).replace(/^\n/, '') : raw.replace(/<\/(?:[\w-]+:)?gpx>/, wpts + '</gpx>');
+}
+$('btnExport').addEventListener('click', () => {
+  const sel = state.items.filter((i) => i.checked);
+  const gpx = buildGpx();
+  const base = state.tour.fileName.replace(/\.gpx$/i, '').replace(/-Reisefuehrer$/, '');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([gpx], { type: 'application/gpx+xml' }));
+  a.download = `${base}-Reisefuehrer.gpx`;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  log(`Reiseführer-GPX gespeichert: ${a.download} mit ${sel.length} Ansagen`, 'ok');
+});
+$('btnClaude').addEventListener('click', () => {
+  const speed = +$('speed').value || 18;
+  const lines = [
+    `Bitte schreibe Reiseführer-Texte für meine Radtour „${state.tour.name}“ (${fmtKm(cum[cum.length - 1])} km, Tempo ca. ${speed} km/h).`,
+    'Recherchiere die Orte (Wikipedia zuerst, dann weitere Quellen), prüfe die Fakten und gib mir eine Reiseführer-GPX zurück.',
+    'Die Ansagen dürfen sich zeitlich nicht überschneiden; fasse nahe Orte bei Bedarf zusammen.',
+    '',
+    '## Ausgewählte Orte',
+  ];
+  for (const it of state.items.filter((i) => i.checked)) {
+    lines.push('', `### ${it.name}${it.label ? ` (${it.label})` : ''}`);
+    lines.push(`- Position: ${it.latitude.toFixed(6)}, ${it.longitude.toFixed(6)} · km ${fmtKm(it.km)} · ${it.distanceToRoute} m neben der Strecke · Ansage ab km ${it.triggerKm == null ? '–' : fmtKm(it.triggerKm)}`);
+    if (it.wikiUrl) lines.push(`- Wikipedia: ${it.wikiUrl}`);
+    if (it.osm) lines.push(`- OpenStreetMap: ${it.osm.link}`);
+    if (it.facts && it.facts.length) lines.push(`- Fakten: ${it.facts.join('; ')}`);
+    if (it.desc) lines.push(`- Bisheriger Text: ${it.desc}`);
+  }
+  showDialog('Für Claude kopieren', 'Text kopieren und zusammen mit der GPX-Datei in den Chat mit Claude einfügen.', lines.join('\n'));
+});
+function showDialog(title, hint, text) {
+  $('dlgTitle').textContent = title; $('dlgHint').textContent = hint; $('dlgText').value = text;
+  $('dlg').showModal();
+}
+$('dlgClose').addEventListener('click', () => $('dlg').close());
+$('dlgCopy').addEventListener('click', async () => { await copyText($('dlgText').value); $('dlgCopy').textContent = 'Kopiert ✓'; setTimeout(() => ($('dlgCopy').textContent = 'In Zwischenablage kopieren'), 1500); });
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); }
+  catch (e) { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+}
+$('btnLogCopy').addEventListener('click', () => copyText([...$('log').children].map((d) => d.textContent).join('\n')));
+$('btnLogClear').addEventListener('click', () => { $('log').innerHTML = ''; });
+$('btnLogToggle').addEventListener('click', () => { const c = $('logbar').classList.toggle('collapsed'); $('btnLogToggle').textContent = c ? 'Ausklappen' : 'Einklappen'; setTimeout(() => map && map.invalidateSize(), 50); });
+
+/* ================================================================
+   Start
+   ================================================================ */
+initMap();
+if (restore()) { prepareRoute(); recalc(); render(true); log(`Letzte Sitzung wiederhergestellt: „${state.tour.name}“`, 'dim'); }
+else { render(); log('Bereit. GPX-Datei öffnen oder ins Fenster ziehen.', 'dim'); }
+</script>
+</body>
+</html>
