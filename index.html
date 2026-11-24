@@ -640,6 +640,8 @@ async function qlever(bb, label) {
           throw new Error(msg);
         }
         const elements = qleverToElements(json);
+        if (!elements.length) log(`${label}: QLever-Antwort ohne Treffer: ${body.slice(0, 300)}`, 'dim');
+        if (!elements.length && variant === 'intersects') { log(`${label}: Flächenabfrage ohne Treffer – versuche Koordinatenfilter`, 'warn'); continue; }
         if (variant === 'latlon') { try { localStorage.setItem('tour-studio-qlever-variant', 'latlon'); } catch (e) { /* egal */ } }
         log(`${label}: Antwort von QLever ${host} – ${fmtS(ms)}, ${kb} kB, ${elements.length} Objekte`, 'ok');
         return { elements, __host: `QLever (${host})` };
@@ -652,6 +654,38 @@ async function qlever(bb, label) {
     }
   }
   throw new Error(`QLever nicht erreichbar (${lastErr?.message || 'unbekannt'})`);
+}
+
+// Prüft Schritt für Schritt, welcher Teil der QLever-Abfrage Ergebnisse liefert (Testgebiet Osnabrück)
+async function qleverDiagnose() {
+  if (job) return;
+  job = { controller: new AbortController(), start: Date.now(), waiting: null };
+  const P = 'PREFIX geo: <http://www.opengis.net/ont/geosparql#>\nPREFIX geof: <http://www.opengis.net/def/function/geosparql/>\nPREFIX osmkey: <https://www.openstreetmap.org/wiki/Key:>\nPREFIX osm2rdfkey: <https://osm2rdf.cs.uni-freiburg.de/rdf/key#>\n';
+  const box = 'FILTER(geof:latitude(?c) > 52.25 && geof:latitude(?c) < 52.30 && geof:longitude(?c) > 8.0 && geof:longitude(?c) < 8.1)';
+  const tests = [
+    ['1 Tags', 'SELECT ?osm ?n WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm osmkey:name ?n } LIMIT 2'],
+    ['2 Tag ohne Anführungswert', 'SELECT ?osm ?v WHERE { ?osm osmkey:amenity ?v } LIMIT 2'],
+    ['3 Mittelpunkt', 'SELECT ?osm ?c WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm geo:hasCentroid/geo:asWKT ?c } LIMIT 2'],
+    ['4 Geometrie', 'SELECT ?osm ?g WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm geo:hasGeometry/geo:asWKT ?g } LIMIT 2'],
+    ['5 Koordinatenfilter', `SELECT ?osm ?c WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm geo:hasCentroid/geo:asWKT ?c . ${box} } LIMIT 3`],
+    ['6 Flächenfilter', 'SELECT ?osm ?c WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm geo:hasCentroid/geo:asWKT ?c . FILTER(geof:sfIntersects(?c, "POLYGON((8.0 52.25, 8.1 52.25, 8.1 52.3, 8.0 52.3, 8.0 52.25))"^^geo:wktLiteral)) } LIMIT 3'],
+    ['7 Alle Tags eines Objekts', 'SELECT ?k ?v WHERE { { SELECT ?osm WHERE { ?osm osmkey:amenity "place_of_worship" } LIMIT 1 } ?osm ?k ?v } LIMIT 15'],
+  ];
+  log('QLever-Test gestartet (Kirchen im Raum Osnabrück)', 'ok');
+  try {
+    for (const [name, q] of tests) {
+      try {
+        const { res, body, ms } = await timedFetch(QLEVER[0], { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/sparql-results+json' }, body: 'query=' + encodeURIComponent(P + q) }, 60000, `QLever-Test ${name}`);
+        let rows = '?';
+        try { const j = JSON.parse(body); rows = j.results?.bindings?.length ?? (j.exception ? 'Fehler' : '?'); } catch (e) { /* roh */ }
+        log(`QLever-Test ${name}: HTTP ${res.status}, ${fmtS(ms)}, ${rows} Zeilen – ${body.replace(/\s+/g, ' ').slice(0, 400)}`, res.ok ? 'ok' : 'warn');
+      } catch (e) {
+        if (e.message === 'abgebrochen') throw e;
+        log(`QLever-Test ${name}: ${e.message}`, 'err');
+      }
+    }
+    log('QLever-Test fertig – bitte Protokoll kopieren und an Claude schicken', 'ok');
+  } finally { job = null; }
 }
 
 async function wikiFor(item) {
@@ -821,7 +855,8 @@ async function search(targets = null) {
             elements = json.elements; sec.source = json.__host;
           } catch (e) { if (e.message === 'abgebrochen') throw e; errors.push(e.message); }
         }
-        if (elements) { cachePut(query, elements); sec.status = 'ok'; }
+        // leere QLever-Antworten nicht speichern (könnte ein Abfrageproblem sein)
+        if (elements) { if (elements.length || !String(sec.source).startsWith('QLever')) cachePut(query, elements); sec.status = 'ok'; }
         else {
           sec.status = 'failed'; sec.error = errors.join(' · '); sec.count = 0;
           log(`${label}: fehlgeschlagen – ${sec.error}`, 'warn');
@@ -950,7 +985,8 @@ function renderSections() {
     Ein erneuter Versuch lohnt sich bei <b style="color:${SECTION_COLOR.failed}">fehlgeschlagen</b> und <b style="color:${SECTION_COLOR.wiki}">Ersatz: Wikipedia</b> (OpenStreetMap findet meist mehr) sowie bei fehlgeschlagener Wikipedia-Suche.
     Die Spalte „Wikipedia“ zeigt zusätzliche Funde; Orte, die OpenStreetMap schon kennt, werden zusammengeführt statt doppelt aufgeführt.</p>
     <div class="row">${open.length ? `<button id="btnRetryAll" class="primary">Alle unvollständigen erneut laden (${open.length})</button>` : '<span style="color:var(--green)">Alle Abschnitte vollständig geladen.</span>'}
-      <button id="btnCacheClear" title="gespeicherte OpenStreetMap-Antworten löschen">Zwischenspeicher leeren</button></div>
+      <button id="btnCacheClear" title="gespeicherte OpenStreetMap-Antworten löschen">Zwischenspeicher leeren</button>
+      <button id="btnQlTest" title="prüft, welche Teile der QLever-Abfrage Ergebnisse liefern">QLever testen</button></div>
     <table style="margin-top:8px"><thead><tr><th>#</th><th>km</th><th>OpenStreetMap</th><th>Funde</th><th>Wikipedia</th><th></th></tr></thead><tbody>
     ${state.sections.map((s, i) => `<tr data-s="${i}"><td>${i + 1}</td><td>${fmtKm(s.startM)}–${fmtKm(s.endM)}</td>
       <td><span style="color:${SECTION_COLOR[s.status]};font-weight:600">● ${SECTION_LABEL[s.status]}</span>${s.error && s.status !== 'ok' && s.status !== 'cache' ? `<div class="meta">${escapeHtml(s.error)}</div>` : ''}</td>
@@ -960,6 +996,7 @@ function renderSections() {
     </tbody></table>`;
   $('btnRetryAll')?.addEventListener('click', () => search(open.map(([, i]) => i)));
   $('btnCacheClear').addEventListener('click', () => { cacheClear(); log('Zwischenspeicher geleert', 'ok'); });
+  $('btnQlTest').addEventListener('click', () => { try { localStorage.removeItem('tour-studio-qlever-variant'); } catch (e) { /* egal */ } qleverDiagnose(); });
   pane.querySelectorAll('tr[data-s]').forEach((tr) => {
     const i = +tr.dataset.s;
     tr.querySelector('[data-retry]')?.addEventListener('click', (e) => { e.stopPropagation(); search([i]); });
