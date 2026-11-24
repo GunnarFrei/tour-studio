@@ -1563,8 +1563,11 @@ function mergeWithNext(idx) {
 function mergeItems(a, b) {
   if (!a || !b) return;
   const idx = state.items.indexOf(a);
-  a.name = `${a.name}, ${b.name}`;
-  a.desc = [a.desc, b.desc].filter(Boolean).join(' ');
+  // gleiche Namen und Textstücke nicht doppelt übernehmen (z. B. zweimal „St. Marien“)
+  const names = [...new Set([...a.name.split(', '), ...b.name.split(', ')])];
+  a.name = names.join(', ');
+  const parts = [a.desc, b.desc].filter(Boolean);
+  a.desc = parts.filter((t, i) => !parts.slice(0, i).some((prev) => prev.includes(t.trim()))).join(' ');
   a.label = '';
   a.facts = [...new Set([...(a.facts || []), ...(b.facts || [])])];
   a.checked = true;
