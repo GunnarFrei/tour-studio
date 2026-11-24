@@ -246,6 +246,7 @@ const GROUPS = {
   natur: 'Natur',
   tiere: 'Tiere',
   kurioses: 'Kunst & Kurioses',
+  gewaesser: 'Gewässer',
   kleindenkmal: 'Wegekreuze & Bildstöcke',
   weitere: 'Weitere (ungeprüft)',
 };
@@ -751,6 +752,134 @@ async function qleverDiagnose() {
   } finally { job = null; }
 }
 
+/* ---------------- Gewässerquerungen ----------------
+   Flüsse, Kanäle und Bäche mit Wikipedia-Eintrag, die die Route kreuzt. */
+function waterQuery([s, w, n, e]) {
+  return `[out:json][timeout:60][bbox:${s},${w},${n},${e}];
+(way[waterway~"^(river|canal)$"][name];way[waterway=stream][name][~"^wiki(pedia|data)$"~"."];)->.w;
+.w out tags geom;
+rel(bw.w)[waterway]["name"];
+out body;`;
+}
+function qleverWaterQuery([s, w, n, e]) {
+  return `PREFIX geo: <http://www.opengis.net/ont/geosparql#>
+PREFIX geof: <http://www.opengis.net/def/function/geosparql/>
+PREFIX osmkey: <https://www.openstreetmap.org/wiki/Key:>
+SELECT ?osm ?g ?type ?name ?wd ?wp WHERE {
+  ?osm osmkey:waterway ?type . FILTER(?type IN ("river", "canal", "stream"))
+  ?osm osmkey:name ?name .
+  OPTIONAL { ?osm osmkey:wikidata ?wd } OPTIONAL { ?osm osmkey:wikipedia ?wp }
+  FILTER(?type != "stream" || BOUND(?wd) || BOUND(?wp))
+  ?osm geo:hasGeometry/geo:asWKT ?g .
+  FILTER(geof:sfIntersects(?g, "POLYGON((${w} ${s}, ${e} ${s}, ${e} ${n}, ${w} ${n}, ${w} ${s}))"^^geo:wktLiteral))
+}`;
+}
+function wktLines(wkt) {
+  const out = [];
+  for (const part of String(wkt).match(/\(([^()]+)\)/g) || []) {
+    out.push(part.slice(1, -1).split(',').map((pt) => { const [x, y] = pt.trim().split(/\s+/).map(Number); return { lat: y, lon: x }; }));
+  }
+  return out;
+}
+async function qleverWater(bb, label) {
+  let lastErr;
+  for (const url of QLEVER) {
+    const host = new URL(url).host;
+    log(`${label}: Gewässer über QLever (${host}) …`, 'dim');
+    try {
+      const { res, body, ms } = await timedFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/sparql-results+json' }, body: 'query=' + encodeURIComponent(qleverWaterQuery(bb)) }, 60000, `wartet auf QLever ${host} (${label}, Gewässer)`);
+      const json = JSON.parse(body);
+      if (!res.ok || json.exception) throw new Error(json.exception ? String(json.exception).slice(0, 160) : `HTTP ${res.status}`);
+      const elements = [];
+      for (const b of json.results?.bindings || []) {
+        const m = /\/(way|relation)\/(\d+)/.exec(b.osm?.value || '');
+        if (!m) continue;
+        const tags = { waterway: b.type.value, name: b.name.value };
+        if (b.wd) tags.wikidata = b.wd.value;
+        if (b.wp) tags.wikipedia = b.wp.value;
+        for (const line of wktLines(b.g.value)) elements.push({ type: m[1], id: +m[2], tags, geometry: line });
+      }
+      log(`${label}: ${elements.length} Gewässerlinien von QLever (${fmtS(ms)})`, 'ok');
+      return { elements };
+    } catch (e) {
+      if (e.message === 'abgebrochen') throw e;
+      lastErr = e;
+      log(`${label}: QLever-Gewässer ${host} fehlgeschlagen – ${e.message}`, 'warn');
+    }
+  }
+  throw new Error(`Gewässer nicht ladbar (${lastErr?.message})`);
+}
+// Schnittpunkt zweier Strecken (lokal eben gerechnet); gibt Position oder null
+function segCross(a, b, c, d) {
+  const kx = 111320 * Math.cos(a.latitude * Math.PI / 180), ky = 110540;
+  const P = (q) => [(q.longitude - a.longitude) * kx, (q.latitude - a.latitude) * ky];
+  const [bx, by] = P(b), [cx, cy] = P(c), [dx, dy] = P(d);
+  const den = bx * (dy - cy) - by * (dx - cx);
+  if (Math.abs(den) < 1e-9) return null;
+  const t = (cx * (dy - cy) - cy * (dx - cx)) / den, u = (cx * by - cy * bx) / den;
+  if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+  return { latitude: a.latitude + t * (b.latitude - a.latitude), longitude: a.longitude + t * (b.longitude - a.longitude), t };
+}
+function waterCrossings(elements, secIndex, sec, taken) {
+  const relOf = new Map();
+  for (const el of elements) if (el.type === 'relation') for (const m of el.members || []) if (m.type === 'way') relOf.set(m.ref, el.tags || {});
+  const lo = route.findIndex((_, i) => cum[i] >= sec.startM - 50), hiIdx = cum.findIndex((c) => c > sec.endM + 50);
+  const r0 = Math.max(1, lo), r1 = hiIdx < 0 ? route.length - 1 : hiIdx;
+  const found = [];
+  for (const el of elements) {
+    if (el.type !== 'way' || !el.geometry) continue;
+    const t = el.tags || {}, rel = relOf.get(el.id) || {};
+    const g = el.geometry.map((q) => ({ latitude: q.lat, longitude: q.lon }));
+    for (let i = r0; i <= r1; i++) {
+      const a = route[i - 1], b = route[i];
+      for (let j = 1; j < g.length; j++) {
+        const x = segCross(a, b, g[j - 1], g[j]);
+        if (!x) continue;
+        const atM = cum[i - 1] + x.t * (cum[i] - cum[i - 1]);
+        if (atM < sec.startM || atM >= sec.endM) continue;
+        found.push({ name: t.name, type: t.waterway, atM, lat: x.latitude, lon: x.longitude,
+          wikipedia: t.wikipedia || rel.wikipedia || '', wikidata: t.wikidata || rel.wikidata || '', link: `https://www.openstreetmap.org/way/${el.id}` });
+      }
+    }
+  }
+  // gleiche Gewässer innerhalb von 300 m Strecke nur einmal (z. B. mehrere Linien eines Flusses)
+  found.sort((a, b) => a.atM - b.atM);
+  const out = [];
+  for (const f of found) {
+    const prev = out.find((o) => o.name === f.name && Math.abs(o.atM - f.atM) < 300);
+    if (prev) { if (!prev.wikidata && f.wikidata) prev.wikidata = f.wikidata; if (!prev.wikipedia && f.wikipedia) prev.wikipedia = f.wikipedia; continue; }
+    out.push(f);
+  }
+  const label = { river: 'Fluss', canal: 'Kanal', stream: 'Bach' };
+  return out.map((f) => {
+    const id = `water-${f.name}-${Math.round(f.atM / 100)}`;
+    if (taken.has(id)) return null;
+    taken.add(id);
+    return { id, section: secIndex, source: 'osm', checked: false, name: f.name, label: `${label[f.type] || 'Gewässer'} (Querung)`, group: 'gewaesser', latitude: f.lat, longitude: f.lon,
+      desc: '', wikiText: '', wikiUrl: '', facts: [`Querung bei km ${fmtKm(f.atM)}`], water: true, osm: { wikipedia: f.wikipedia, wikidata: f.wikidata, link: f.link } };
+  }).filter(Boolean);
+}
+// Quelle, Mündung und Länge aus Wikidata
+async function waterFacts(item) {
+  const q = item.osm.wikidata;
+  if (!q) return;
+  const get = async (url) => { const { res, body } = await timedFetch(url, {}, 20000, `wartet auf Wikidata (${item.name})`); if (!res.ok) throw new Error(`Wikidata HTTP ${res.status}`); return JSON.parse(body); };
+  const ent = (await get(`https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${q}&props=claims&format=json&origin=*`)).entities?.[q];
+  if (!ent) return;
+  const ids = (p) => (ent.claims?.[p] || []).map((c) => c.mainsnak?.datavalue?.value?.id).filter(Boolean);
+  const src = ids('P885'), mouth = ids('P403');
+  const len = ent.claims?.P2043?.[0]?.mainsnak?.datavalue?.value;
+  const all = [...new Set([...src, ...mouth])];
+  const labels = {};
+  if (all.length) {
+    const ents = (await get(`https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${all.join('|')}&props=labels&languages=de|en&format=json&origin=*`)).entities || {};
+    for (const [k, v] of Object.entries(ents)) labels[k] = v.labels?.de?.value || v.labels?.en?.value || k;
+  }
+  if (src.length) item.facts.push(`Quelle/Ursprung: ${src.map((x) => labels[x]).join(', ')}`);
+  if (mouth.length) item.facts.push(`mündet in: ${mouth.map((x) => labels[x]).join(', ')}`);
+  if (len) { const km = /Q11573$/.test(len.unit) ? Number(len.amount) / 1000 : Number(len.amount); item.facts.push(`Länge: ${km.toLocaleString('de-DE', { maximumFractionDigits: 1 })} km`); }
+}
+
 async function wikiFor(item) {
   let title = null;
   const m = /^([a-z-]+):(.+)$/.exec(item.osm.wikipedia || '');
@@ -770,6 +899,7 @@ async function wikiFor(item) {
   if (!res.ok) { log(`  ${item.name}: Wikipedia HTTP ${res.status} für „${title}“`, 'warn'); return; }
   const data = JSON.parse(body);
   item.wikiText = data.extract || '';
+  if (!item.osm.wikidata && data.wikibase_item) item.osm.wikidata = data.wikibase_item;
   item.wikiUrl = data.content_urls?.desktop?.page || `https://de.wikipedia.org/wiki/${encodeURIComponent(title)}`;
   if (!item.desc && item.wikiText) item.desc = item.wikiText;
   log(`  ${item.name}: Wikipedia „${title}“ – ${item.wikiText.length} Zeichen (${fmtS(ms)})`, 'ok');
@@ -933,6 +1063,25 @@ async function search(targets = null) {
       }
       renderSections(); drawMap();
     }
+    // 1b) Gewässerquerungen je Abschnitt
+    for (let n = 0; n < targets.length && sourceMode !== 'wiki'; n++) {
+      const i = targets[n], sec = state.sections[i], label = `Abschnitt ${i + 1}/${secs.length}`;
+      job.step = `Gewässer: ${label}`;
+      const bb = bbox(secs[i].pts, 300), query = waterQuery(bb);
+      let elements = cacheGet(query)?.elements || null;
+      if (!elements) {
+        try {
+          if (osmServer !== 'qlever') { try { elements = (await overpass(query, `${label} Gewässer`, 1)).elements; } catch (e) { if (e.message === 'abgebrochen') throw e; } }
+          if (!elements && osmServer !== 'overpass') elements = (await qleverWater(bb, label)).elements;
+          if (elements) cachePut(query, elements);
+        } catch (e) { if (e.message === 'abgebrochen') throw e; log(`${label}: Gewässer nicht geladen – ${e.message}`, 'warn'); }
+      }
+      if (elements) {
+        const list = waterCrossings(elements, i, sec, taken);
+        if (list.length) log(`${label}: ${list.length} Gewässerquerung(en): ${list.map((w) => w.name).join(', ')}`, 'ok');
+        newItems.push(...list);
+      }
+    }
     if (sourceMode !== 'wiki') log(`Aussortiert: ${stats.far} zu weit von der Strecke, ${stats.noCat} keine passende Art, ${stats.skipped} Stolpersteine/Gedenktafeln, ${stats.own} schon als eigener Wegpunkt, ${stats.dup} doppelt eingetragen, ${stats.noName} ohne Namen`, 'dim');
 
     // 2) Wikipedia-Texte für neue OpenStreetMap-Funde
@@ -950,6 +1099,9 @@ async function search(targets = null) {
       }
     };
     await Promise.all([worker(), worker(), worker()]);
+    for (const p of newItems.filter((x) => x.water && x.osm.wikidata)) {
+      try { await waterFacts(p); } catch (e) { if (e.message === 'abgebrochen') throw e; log(`  ${p.name}: ${e.message}`, 'warn'); }
+    }
     for (const p of newItems) if (p.source === 'osm') p.checked = !!p.wikiText;
 
     // 3) Wikipedia-Umkreissuche: bei „kombiniert“ und „nur Wikipedia“ für alle Abschnitte,
@@ -1011,7 +1163,7 @@ async function search(targets = null) {
     const byArticle = new Map();
     const rank = (p) => (p.source === 'osm' ? 0 : 1e6) + projectOnRoute(p, route, cum).d;
     for (const p of [...all].sort((a, b) => rank(a) - rank(b))) {
-      if (!p.wikiUrl) continue;
+      if (!p.wikiUrl || p.water) continue; // denselben Fluss mehrmals zu queren ist erlaubt
       const first = byArticle.get(p.wikiUrl);
       if (first) { keep.delete(p); log(`Doppelt: „${p.name}“ beschreibt dasselbe wie „${first.name}“ – entfernt`, 'dim'); }
       else byArticle.set(p.wikiUrl, p);
