@@ -586,17 +586,17 @@ function qleverQuery([s, w, n, e], spatial) {
     return `{ ${b} }`;
   });
   const area = spatial === 'intersects'
-    ? `FILTER(geof:sfIntersects(?c0, "POLYGON((${w} ${s}, ${e} ${s}, ${e} ${n}, ${w} ${n}, ${w} ${s}))"^^geo:wktLiteral))`
-    : `BIND(geof:latitude(?c0) AS ?lat0) BIND(geof:longitude(?c0) AS ?lon0) FILTER(?lat0 >= ${s} && ?lat0 <= ${n} && ?lon0 >= ${w} && ?lon0 <= ${e})`;
+    ? `FILTER(geof:sfIntersects(?g, "POLYGON((${w} ${s}, ${e} ${s}, ${e} ${n}, ${w} ${n}, ${w} ${s}))"^^geo:wktLiteral))`
+    : `BIND(geof:centroid(?g) AS ?c0) BIND(geof:latitude(?c0) AS ?lat0) BIND(geof:longitude(?c0) AS ?lon0) FILTER(?lat0 >= ${s} && ?lat0 <= ${n} && ?lon0 >= ${w} && ?lon0 <= ${e})`;
   return `PREFIX geo: <http://www.opengis.net/ont/geosparql#>
 PREFIX geof: <http://www.opengis.net/def/function/geosparql/>
 PREFIX osmkey: <https://www.openstreetmap.org/wiki/Key:>
 SELECT ?osm ?c ?k ?val WHERE {
   { SELECT DISTINCT ?osm ?c WHERE {
     ${blocks.join('\n    UNION ')}
-    ?osm geo:hasCentroid/geo:asWKT ?c0 .
+    ?osm geo:hasGeometry/geo:asWKT ?g .
     ${area}
-    BIND(?c0 AS ?c)
+    BIND(geof:centroid(?g) AS ?c)
   } }
   ?osm ?k ?val .
   FILTER(STRSTARTS(STR(?k), "https://www.openstreetmap.org/wiki/Key:"))
@@ -623,7 +623,7 @@ function qleverToElements(json) {
 async function qlever(bb, label) {
   let lastErr;
   let variants = ['intersects', 'latlon'];
-  try { if (localStorage.getItem('tour-studio-qlever-variant') === 'latlon') variants = ['latlon']; } catch (e) { /* egal */ }
+  try { if (localStorage.getItem('tour-studio-qlever-variant2') === 'latlon') variants = ['latlon']; } catch (e) { /* egal */ }
   for (const url of QLEVER) {
     const host = new URL(url).host;
     for (const variant of variants) {
@@ -642,7 +642,7 @@ async function qlever(bb, label) {
         const elements = qleverToElements(json);
         if (!elements.length) log(`${label}: QLever-Antwort ohne Treffer: ${body.slice(0, 300)}`, 'dim');
         if (!elements.length && variant === 'intersects') { log(`${label}: Flächenabfrage ohne Treffer – versuche Koordinatenfilter`, 'warn'); continue; }
-        if (variant === 'latlon') { try { localStorage.setItem('tour-studio-qlever-variant', 'latlon'); } catch (e) { /* egal */ } }
+        if (variant === 'latlon' && elements.length) { try { localStorage.setItem('tour-studio-qlever-variant2', 'latlon'); } catch (e) { /* egal */ } }
         log(`${label}: Antwort von QLever ${host} – ${fmtS(ms)}, ${kb} kB, ${elements.length} Objekte`, 'ok');
         return { elements, __host: `QLever (${host})` };
       } catch (e) {
@@ -665,11 +665,10 @@ async function qleverDiagnose() {
   const tests = [
     ['1 Tags', 'SELECT ?osm ?n WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm osmkey:name ?n } LIMIT 2'],
     ['2 Tag ohne Anführungswert', 'SELECT ?osm ?v WHERE { ?osm osmkey:amenity ?v } LIMIT 2'],
-    ['3 Mittelpunkt', 'SELECT ?osm ?c WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm geo:hasCentroid/geo:asWKT ?c } LIMIT 2'],
-    ['4 Geometrie', 'SELECT ?osm ?g WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm geo:hasGeometry/geo:asWKT ?g } LIMIT 2'],
-    ['5 Koordinatenfilter', `SELECT ?osm ?c WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm geo:hasCentroid/geo:asWKT ?c . ${box} } LIMIT 3`],
-    ['6 Flächenfilter', 'SELECT ?osm ?c WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm geo:hasCentroid/geo:asWKT ?c . FILTER(geof:sfIntersects(?c, "POLYGON((8.0 52.25, 8.1 52.25, 8.1 52.3, 8.0 52.3, 8.0 52.25))"^^geo:wktLiteral)) } LIMIT 3'],
-    ['7 Alle Tags eines Objekts', 'SELECT ?k ?v WHERE { { SELECT ?osm WHERE { ?osm osmkey:amenity "place_of_worship" } LIMIT 1 } ?osm ?k ?v } LIMIT 15'],
+    ['3 Koordinatenfilter (berechneter Mittelpunkt)', `SELECT ?osm ?c WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm geo:hasGeometry/geo:asWKT ?g . BIND(geof:centroid(?g) AS ?c) ${box} } LIMIT 3`],
+    ['4 Flächenfilter auf Geometrie', 'SELECT ?osm ?c WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm geo:hasGeometry/geo:asWKT ?g . FILTER(geof:sfIntersects(?g, "POLYGON((8.0 52.25, 8.1 52.25, 8.1 52.3, 8.0 52.3, 8.0 52.25))"^^geo:wktLiteral)) BIND(geof:centroid(?g) AS ?c) } LIMIT 3'],
+    ['5 Mittelpunkt berechnet', 'SELECT ?osm ?c WHERE { ?osm osmkey:amenity "place_of_worship" . ?osm geo:hasGeometry/geo:asWKT ?g . BIND(geof:centroid(?g) AS ?c) } LIMIT 2'],
+    ['6 Alle Tags eines Objekts', 'SELECT ?k ?v WHERE { { SELECT ?osm WHERE { ?osm osmkey:amenity "place_of_worship" } LIMIT 1 } ?osm ?k ?v } LIMIT 15'],
   ];
   log('QLever-Test gestartet (Kirchen im Raum Osnabrück)', 'ok');
   try {
@@ -996,7 +995,7 @@ function renderSections() {
     </tbody></table>`;
   $('btnRetryAll')?.addEventListener('click', () => search(open.map(([, i]) => i)));
   $('btnCacheClear').addEventListener('click', () => { cacheClear(); log('Zwischenspeicher geleert', 'ok'); });
-  $('btnQlTest').addEventListener('click', () => { try { localStorage.removeItem('tour-studio-qlever-variant'); } catch (e) { /* egal */ } qleverDiagnose(); });
+  $('btnQlTest').addEventListener('click', () => { try { localStorage.removeItem('tour-studio-qlever-variant2'); } catch (e) { /* egal */ } qleverDiagnose(); });
   pane.querySelectorAll('tr[data-s]').forEach((tr) => {
     const i = +tr.dataset.s;
     tr.querySelector('[data-retry]')?.addEventListener('click', (e) => { e.stopPropagation(); search([i]); });
