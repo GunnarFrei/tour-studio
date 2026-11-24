@@ -107,6 +107,7 @@
     <div class="tabs">
       <button data-tab="list" class="active">Ansagen</button>
       <button data-tab="timeline">Zeitplan</button>
+      <button data-tab="sections">Abschnitte</button>
     </div>
     <div class="tabpane" id="pane-list">
       <div class="toolbar" id="groupBar" title="Welche Arten von Sehenswürdigkeiten angezeigt und übernommen werden"></div>
@@ -117,6 +118,7 @@
       <div id="items"></div>
     </div>
     <div class="tabpane hidden" id="pane-timeline"></div>
+    <div class="tabpane hidden" id="pane-sections"></div>
   </aside>
 </main>
 
@@ -429,6 +431,7 @@ function restore() {
 function setTour(text, fileName) {
   const t = parseGpx(text, fileName);
   state.tour = { name: t.name, fileName, raw: text, segments: t.segments };
+  state.sections = null;
   state.items = t.waypoints.map((w, i) => ({ id: `gpx-${i}-${Date.now()}`, source: 'gpx', checked: true, name: w.name, label: '', latitude: w.latitude, longitude: w.longitude, desc: w.desc || '', wikiText: '', wikiUrl: '', facts: [] }));
   prepareRoute();
   recalc();
@@ -526,6 +529,7 @@ async function overpass(query, label, rounds = 1) {
         try { json = JSON.parse(body); } catch (e) { throw new Error(`keine gültige Antwort (${kb} kB, ${fmtS(ms)})`); }
         if (json.remark && /error|timed out|out of memory/i.test(json.remark)) throw new Error(`Server meldet: ${json.remark.slice(0, 120)}`);
         log(`${label}: Antwort von ${host} – HTTP ${res.status}, ${fmtS(ms)}, ${kb} kB, ${json.elements.length} Objekte`, 'ok');
+        json.__host = host;
         return json;
       } catch (e) {
         if (e.message === 'abgebrochen') throw e;
@@ -569,10 +573,86 @@ async function getJsonLogged(url, label) {
   return JSON.parse(body);
 }
 
-$('btnSearch').addEventListener('click', search);
+$('btnSearch').addEventListener('click', () => search(null));
 $('btnCancel').addEventListener('click', () => { if (job) { job.controller.abort(); log('Abbruch angefordert …', 'warn'); } });
 
-async function search() {
+/* ----------------------------------------------------------------
+   Abschnitte: jeder ~6-km-Teil der Route wird einzeln geladen,
+   gespeichert und kann einzeln wiederholt werden.
+   ---------------------------------------------------------------- */
+const SECTION_LABEL = { ok: 'geladen', cache: 'aus Zwischenspeicher', wiki: 'Ersatz: Wikipedia', failed: 'fehlgeschlagen', pending: 'offen' };
+const SECTION_COLOR = { ok: '#1a7f37', cache: '#1f6feb', wiki: '#8250df', failed: '#cf222e', pending: '#9aa4ae' };
+function buildSections() {
+  const simple = simplifyRoute(route, 150);
+  const idx = new Map(route.map((p, i) => [p, i]));
+  const kmOf = (p) => cum[idx.get(p)] ?? projectOnRoute(p, route, cum).at;
+  const CHUNK = 40, out = [];
+  for (let i = 0; i < simple.length - 1; i += CHUNK - 1) {
+    const pts = simple.slice(i, i + CHUNK);
+    out.push({ pts, startM: kmOf(pts[0]), endM: kmOf(pts[pts.length - 1]) });
+  }
+  return out;
+}
+function sectionRoute(sec) {
+  return route.filter((p, i) => cum[i] >= sec.startM - 1 && cum[i] <= sec.endM + 1);
+}
+
+// Zwischenspeicher für OpenStreetMap-Antworten (7 Tage)
+const CACHE_PREFIX = 'ts-op:', CACHE_DAYS = 7;
+function hashStr(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36); }
+function cacheGet(query) {
+  try {
+    const raw = localStorage.getItem(CACHE_PREFIX + hashStr(query));
+    if (!raw) return null;
+    const c = JSON.parse(raw);
+    if (Date.now() - c.t > CACHE_DAYS * 864e5) return null;
+    return c;
+  } catch (e) { return null; }
+}
+function cachePut(query, elements) {
+  const key = CACHE_PREFIX + hashStr(query), val = JSON.stringify({ t: Date.now(), elements });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { localStorage.setItem(key, val); return; } catch (e) {
+      // Speicher voll: älteste Einträge entfernen
+      const keys = Object.keys(localStorage).filter((k) => k.startsWith(CACHE_PREFIX))
+        .map((k) => { try { return [k, JSON.parse(localStorage.getItem(k)).t]; } catch (x) { return [k, 0]; } })
+        .sort((a, b) => a[1] - b[1]);
+      keys.slice(0, Math.max(1, Math.ceil(keys.length / 2))).forEach(([k]) => localStorage.removeItem(k));
+    }
+  }
+}
+function cacheClear() {
+  try { Object.keys(localStorage).filter((k) => k.startsWith(CACHE_PREFIX)).forEach((k) => localStorage.removeItem(k)); } catch (e) { /* egal */ }
+}
+
+// OpenStreetMap-Objekte eines Abschnitts in Einträge umwandeln
+function parseElements(elements, secIndex, stats, taken) {
+  const out = [];
+  for (const el of elements) {
+    const t = el.tags || {};
+    const lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
+    if (lat == null) { stats.noName++; continue; }
+    const key = `${el.type}/${el.id}`;
+    if (taken.has(`osm-${key}`)) continue;
+    const cls = classify(t);
+    if (!cls) { stats.noCat++; continue; }
+    if (cls.skip) { stats.skipped++; continue; }
+    const name = fallbackName(t, cls);
+    if (!name) { stats.noName++; continue; }
+    const pos = { latitude: lat, longitude: lon };
+    const pr = projectOnRoute(pos, route, cum);
+    if (pr.d > cls.corridor) { stats.far++; continue; }
+    if (state.items.some((it) => it.source !== 'osm' && it.source !== 'wiki' && distance(it, pos) < 120)) { stats.own++; continue; }
+    const dup = out.find((o) => o.name === name && distance(o, pos) < 150);
+    if (dup) { if (!dup.osm.wikipedia && t.wikipedia) dup.osm.wikipedia = t.wikipedia; if (!dup.osm.wikidata && t.wikidata) dup.osm.wikidata = t.wikidata; stats.dup++; continue; }
+    taken.add(`osm-${key}`);
+    out.push({ id: `osm-${key}`, section: secIndex, source: 'osm', checked: false, name, label: cls.label, group: cls.group, latitude: lat, longitude: lon, desc: '', wikiText: '', wikiUrl: '', facts: osmFacts(t), osm: { wikipedia: t.wikipedia || '', wikidata: t.wikidata || '', link: `https://www.openstreetmap.org/${el.type}/${el.id}` } });
+  }
+  return out;
+}
+
+// targets: null = alle Abschnitte neu; sonst Liste von Abschnittsnummern
+async function search(targets = null) {
   if (!state.tour || job) return;
   job = { controller: new AbortController(), start: Date.now(), waiting: null };
   $('btnSearch').disabled = true;
@@ -583,74 +663,87 @@ async function search() {
     setStatus(`${job.step || 'läuft'} · gesamt ${fmtS(Date.now() - job.start)}${w}`, true);
   }, 250);
   try {
-    const simple = simplifyRoute(route, 150);
-    const CHUNK = 40;
-    const chunks = [];
-    for (let i = 0; i < simple.length; i += CHUNK - 1) chunks.push(simple.slice(i, i + CHUNK));
-    log(`Suche gestartet: ${fmtKm(cum[cum.length - 1])} km Route in ${chunks.length} Abschnitt(en)`, 'ok');
-
-    const found = new Map();
-    const stats = { far: 0, noCat: 0, skipped: 0, own: 0, dup: 0, noName: 0 };
-    let osmFailed = null;
+    const secs = buildSections();
+    const full = !targets || !state.sections || state.sections.length !== secs.length;
+    if (full) {
+      state.sections = secs.map((s) => ({ startM: s.startM, endM: s.endM, status: 'pending', source: '', count: 0, error: '' }));
+      targets = secs.map((_, i) => i);
+    }
     const sourceMode = $('source').value;
-    log(`Quelle: ${{ auto: 'automatisch (OpenStreetMap, sonst Wikipedia)', osm: 'nur OpenStreetMap', wiki: 'nur Wikipedia' }[sourceMode]}`, 'dim');
-    try {
-    if (sourceMode === 'wiki') throw new Error('Wikipedia gewählt');
-    for (let i = 0; i < chunks.length; i++) {
-      job.step = `OpenStreetMap: Abschnitt ${i + 1}/${chunks.length}`;
-      setStatus(job.step, true, (i / chunks.length) * 0.5);
-      const [s, w, n, e] = bbox(chunks[i], 1600);
-      const area = (distance({ latitude: s, longitude: w }, { latitude: n, longitude: w }) * distance({ latitude: s, longitude: w }, { latitude: s, longitude: e })) / 1e6;
-      log(`Abschnitt ${i + 1}/${chunks.length}: Rechteck ${s},${w} – ${n},${e} (ca. ${area.toFixed(0)} km²)`, 'dim');
-      const json = await overpass(buildQuery(chunks[i]), `Abschnitt ${i + 1}/${chunks.length}`, sourceMode === 'osm' ? 3 : 1);
-      let kept = 0;
-      for (const el of json.elements) {
-        const t = el.tags || {};
-        const lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
-        if (lat == null) { stats.noName++; continue; }
-        const key = `${el.type}/${el.id}`;
-        if (found.has(key)) continue;
-        const cls = classify(t);
-        if (!cls) { stats.noCat++; continue; }
-        if (cls.skip) { stats.skipped++; continue; }
-        const name = fallbackName(t, cls);
-        if (!name) { stats.noName++; continue; }
-        const pos = { latitude: lat, longitude: lon };
-        const pr = projectOnRoute(pos, route, cum);
-        if (pr.d > cls.corridor) { stats.far++; continue; }
-        if (state.items.some((it) => it.source !== 'osm' && it.source !== 'wiki' && distance(it, pos) < 120)) { stats.own++; continue; }
-        const dup = [...found.values()].find((o) => o.name === name && distance(o, pos) < 150);
-        if (dup) { if (!dup.osm.wikipedia && t.wikipedia) dup.osm.wikipedia = t.wikipedia; if (!dup.osm.wikidata && t.wikidata) dup.osm.wikidata = t.wikidata; stats.dup++; continue; }
-        found.set(key, { id: `osm-${key}`, source: 'osm', checked: false, name, label: cls.label, group: cls.group, latitude: lat, longitude: lon, desc: '', wikiText: '', wikiUrl: '', facts: osmFacts(t), osm: { wikipedia: t.wikipedia || '', wikidata: t.wikidata || '', link: `https://www.openstreetmap.org/${el.type}/${el.id}` } });
-        kept++;
-      }
-      log(`Abschnitt ${i + 1}: ${kept} neue Sehenswürdigkeiten in Reichweite`, kept ? 'ok' : '');
-    }
-    } catch (e) {
-      if (e.message === 'abgebrochen') throw e;
-      if (sourceMode === 'osm') throw e; // keine Ersatzquelle gewünscht
-      osmFailed = e;
-    }
-    if (osmFailed) {
-      if (sourceMode === 'wiki') log('Suche über Wikipedia …', 'ok');
-      else log(`OpenStreetMap nicht verfügbar (${osmFailed.message}) – wechsle zur Ersatzquelle Wikipedia`, 'warn');
-      job.step = 'Wikipedia-Umkreissuche';
-      setStatus(job.step, true, 0.5);
-      const own = state.items.filter((it) => it.source !== 'osm' && it.source !== 'wiki');
-      const sights = await wikiSights(route, own, getJsonLogged, (t) => log(t, 'ok'));
-      const list = sights.map((p) => ({ id: p.id, source: 'wiki', checked: !!p.desc && p.group !== 'weitere', name: p.name, label: p.label, group: p.group, latitude: p.latitude, longitude: p.longitude,
-        desc: p.desc, wikiText: p.desc, wikiUrl: `https://de.wikipedia.org/wiki/${encodeURIComponent(p.wikiTitle.replace(/ /g, '_'))}`, facts: p.wdDescription ? [`Wikidata: ${p.wdDescription}`] : [] }));
-      state.items = state.items.filter((it) => it.source !== 'osm' && it.source !== 'wiki').concat(list);
-      recalc(); render(true); save();
-      log(`Fertig nach ${fmtS(Date.now() - job.start)} (Quelle: Wikipedia): ${list.length} Funde, ${list.filter((p) => p.checked).length} vorausgewählt`, 'ok');
-      setStatus(`Fertig: ${list.length} Sehenswürdigkeiten (Wikipedia)`, false, 1);
-      return;
-    }
-    log(`Aussortiert: ${stats.far} zu weit von der Strecke, ${stats.noCat} keine passende Art, ${stats.skipped} Stolpersteine/Gedenktafeln, ${stats.own} schon als eigener Wegpunkt, ${stats.dup} doppelt eingetragen, ${stats.noName} ohne Namen`, 'dim');
+    log(`${full ? 'Suche gestartet' : 'Erneuter Versuch'}: ${targets.length} von ${secs.length} Abschnitt(en), Quelle ${{ auto: 'automatisch', osm: 'nur OpenStreetMap', wiki: 'nur Wikipedia' }[sourceMode]}`, 'ok');
 
-    const list = [...found.values()];
-    const withWiki = list.filter((p) => p.osm.wikipedia || p.osm.wikidata);
-    log(`${list.length} Sehenswürdigkeiten gefunden, davon ${withWiki.length} mit Wikipedia/Wikidata-Verweis – lade Texte …`, 'ok');
+    // bisherige Funde der betroffenen Abschnitte entfernen (eigene/zusammengefasste bleiben)
+    const tset = new Set(targets);
+    state.items = state.items.filter((it) => !((it.source === 'osm' || it.source === 'wiki') && (full || tset.has(it.section))));
+    const taken = new Set(state.items.map((it) => it.id));
+    const stats = { far: 0, noCat: 0, skipped: 0, own: 0, dup: 0, noName: 0 };
+    const newItems = [];
+    renderSections(); drawMap();
+
+    // 1) OpenStreetMap je Abschnitt (Zwischenspeicher zuerst)
+    for (let n = 0; n < targets.length; n++) {
+      const i = targets[n], sec = state.sections[i], label = `Abschnitt ${i + 1}/${secs.length} (km ${fmtKm(sec.startM)}–${fmtKm(sec.endM)})`;
+      if (sourceMode === 'wiki') { sec.status = 'failed'; sec.error = 'Wikipedia gewählt'; continue; }
+      job.step = `OpenStreetMap: ${label}`;
+      setStatus(job.step, true, (n / targets.length) * 0.6);
+      const query = buildQuery(secs[i].pts);
+      let elements = null;
+      const cached = cacheGet(query);
+      if (cached) {
+        elements = cached.elements; sec.status = 'cache'; sec.source = 'Zwischenspeicher';
+        log(`${label}: aus Zwischenspeicher (geladen ${new Date(cached.t).toLocaleString('de-DE')}), ${elements.length} Objekte`, 'ok');
+      } else {
+        try {
+          const json = await overpass(query, label, sourceMode === 'osm' ? 3 : 1);
+          elements = json.elements; cachePut(query, elements);
+          sec.status = 'ok'; sec.source = json.__host || 'OpenStreetMap';
+        } catch (e) {
+          if (e.message === 'abgebrochen') throw e;
+          sec.status = 'failed'; sec.error = e.message; sec.count = 0;
+          log(`${label}: fehlgeschlagen – ${e.message}`, 'warn');
+        }
+      }
+      if (elements) {
+        const list = parseElements(elements, i, stats, taken);
+        sec.count = list.length; sec.error = '';
+        newItems.push(...list);
+        log(`${label}: ${list.length} Sehenswürdigkeiten in Reichweite`, list.length ? 'ok' : '');
+      }
+      renderSections(); drawMap();
+    }
+    if (sourceMode !== 'wiki') log(`Aussortiert: ${stats.far} zu weit von der Strecke, ${stats.noCat} keine passende Art, ${stats.skipped} Stolpersteine/Gedenktafeln, ${stats.own} schon als eigener Wegpunkt, ${stats.dup} doppelt eingetragen, ${stats.noName} ohne Namen`, 'dim');
+
+    // 2) Wikipedia für fehlgeschlagene Abschnitte (nicht bei „nur OpenStreetMap“)
+    const failed = targets.filter((i) => state.sections[i].status === 'failed');
+    if (failed.length && sourceMode !== 'osm') {
+      log(sourceMode === 'wiki' ? 'Suche über Wikipedia …' : `${failed.length} Abschnitt(e) ohne OpenStreetMap-Daten – Ersatz über Wikipedia`, sourceMode === 'wiki' ? 'ok' : 'warn');
+      const own = state.items.filter((it) => it.source !== 'osm' && it.source !== 'wiki');
+      for (let n = 0; n < failed.length; n++) {
+        const i = failed[n], sec = state.sections[i];
+        job.step = `Wikipedia: Abschnitt ${i + 1}`;
+        setStatus(job.step, true, 0.6 + 0.2 * (n / failed.length));
+        try {
+          const sights = await wikiSights(sectionRoute(sec), own, getJsonLogged, (t) => log(t, 'dim'));
+          const list = sights.filter((p) => !taken.has(p.id) && !newItems.some((o) => o.name === p.name && distance(o, p) < 150)).map((p) => {
+            taken.add(p.id);
+            return { id: p.id, section: i, source: 'wiki', checked: !!p.desc && p.group !== 'weitere', name: p.name, label: p.label, group: p.group, latitude: p.latitude, longitude: p.longitude,
+              desc: p.desc, wikiText: p.desc, wikiUrl: `https://de.wikipedia.org/wiki/${encodeURIComponent(p.wikiTitle.replace(/ /g, '_'))}`, facts: p.wdDescription ? [`Wikidata: ${p.wdDescription}`] : [] };
+          });
+          newItems.push(...list);
+          sec.status = 'wiki'; sec.source = 'Wikipedia'; sec.count = list.length;
+          log(`Abschnitt ${i + 1}: ${list.length} Funde über Wikipedia`, 'ok');
+        } catch (e) {
+          if (e.message === 'abgebrochen') throw e;
+          sec.error += ` · Wikipedia: ${e.message}`;
+          log(`Abschnitt ${i + 1}: auch Wikipedia fehlgeschlagen – ${e.message}`, 'err');
+        }
+        renderSections(); drawMap();
+      }
+    }
+
+    // 3) Wikipedia-Texte für neue OpenStreetMap-Funde
+    const withWiki = newItems.filter((p) => p.source === 'osm' && (p.osm.wikipedia || p.osm.wikidata));
+    if (withWiki.length) log(`Lade Texte für ${withWiki.length} Funde mit Wikipedia-/Wikidata-Verweis …`, 'ok');
     let done = 0;
     const queue = [...withWiki];
     const worker = async () => {
@@ -658,37 +751,64 @@ async function search() {
         const p = queue.shift();
         try { await wikiFor(p); } catch (e) { if (e.message === 'abgebrochen') throw e; log(`  ${p.name}: ${e.message}`, 'warn'); }
         done++;
-        job.step = `Wikipedia: ${done}/${withWiki.length}`;
-        setStatus(job.step, true, 0.5 + 0.5 * (done / Math.max(1, withWiki.length)));
+        job.step = `Wikipedia-Texte: ${done}/${withWiki.length}`;
+        setStatus(job.step, true, 0.8 + 0.2 * (done / Math.max(1, withWiki.length)));
       }
     };
     await Promise.all([worker(), worker(), worker()]);
+    for (const p of newItems) if (p.source === 'osm') p.checked = !!p.wikiText;
 
-    // gleicher Wikipedia-Artikel = gleicher Ort (z. B. Kirche und Kloster): nur den nächsten behalten
+    // 4) gleicher Wikipedia-Artikel = gleicher Ort: nur den nächsten behalten (über alle Funde)
+    const all = state.items.filter((it) => it.source === 'osm' || it.source === 'wiki').concat(newItems);
+    const keep = new Set(all);
     const byArticle = new Map();
-    for (const p of [...list].sort((a, b) => projectOnRoute(a, route, cum).d - projectOnRoute(b, route, cum).d)) {
+    for (const p of [...all].sort((a, b) => projectOnRoute(a, route, cum).d - projectOnRoute(b, route, cum).d)) {
       if (!p.wikiUrl) continue;
       const first = byArticle.get(p.wikiUrl);
-      if (first) { log(`Doppelt: „${p.name}“ beschreibt dasselbe wie „${first.name}“ – entfernt`, 'dim'); list.splice(list.indexOf(p), 1); }
+      if (first) { keep.delete(p); log(`Doppelt: „${p.name}“ beschreibt dasselbe wie „${first.name}“ – entfernt`, 'dim'); }
       else byArticle.set(p.wikiUrl, p);
     }
-    // mit Text vorauswählen; alte OSM-Funde ersetzen
-    for (const p of list) p.checked = !!p.wikiText;
-    state.items = state.items.filter((it) => it.source !== 'osm' && it.source !== 'wiki').concat(list);
-    recalc();
-    render(true);
-    save();
-    log(`Fertig nach ${fmtS(Date.now() - job.start)}: ${list.length} Funde, ${list.filter((p) => p.checked).length} mit Wikipedia-Text vorausgewählt`, 'ok');
-    setStatus(`Fertig: ${list.length} Sehenswürdigkeiten`, false, 1);
+    state.items = state.items.filter((it) => !(it.source === 'osm' || it.source === 'wiki') || keep.has(it)).concat(newItems.filter((p) => keep.has(p)));
+    recalc(); render(!targets || full); save();
+    const open = state.sections.filter((s) => s.status === 'failed' || s.status === 'wiki').length;
+    log(`Fertig nach ${fmtS(Date.now() - job.start)}: ${newItems.filter((p) => keep.has(p)).length} neue Funde${open ? ` · ${open} Abschnitt(e) ohne OpenStreetMap-Daten – siehe Reiter „Abschnitte“` : ''}`, open ? 'warn' : 'ok');
+    setStatus(`Fertig${open ? ` – ${open} Abschnitt(e) unvollständig` : ''}`, false, 1);
   } catch (e) {
     log(`Suche beendet: ${e.message}`, e.message === 'abgebrochen' ? 'warn' : 'err');
     setStatus(`Fehler: ${e.message}`, false);
+    recalc(); render(); save();
   } finally {
     clearInterval(ticker);
     job = null;
     $('btnSearch').disabled = !state.tour;
     $('btnCancel').classList.add('hidden');
+    renderSections();
   }
+}
+
+function renderSections() {
+  const pane = $('pane-sections');
+  if (!pane) return;
+  if (!state.tour || !state.sections) { pane.innerHTML = '<p class="meta">Noch keine Suche gelaufen.</p>'; return; }
+  const open = state.sections.map((s, i) => [s, i]).filter(([s]) => s.status === 'failed' || s.status === 'wiki' || s.status === 'pending');
+  pane.innerHTML = `
+    <p class="meta">Die Route wird in Abschnitten von etwa 6 km abgefragt. Geladene Abschnitte bleiben 7 Tage im Zwischenspeicher.
+    Ein erneuter Versuch lohnt sich bei <b style="color:${SECTION_COLOR.failed}">fehlgeschlagen</b> und <b style="color:${SECTION_COLOR.wiki}">Ersatz: Wikipedia</b> (OpenStreetMap findet meist mehr).</p>
+    <div class="row">${open.length ? `<button id="btnRetryAll" class="primary">Alle unvollständigen erneut laden (${open.length})</button>` : '<span style="color:var(--green)">Alle Abschnitte aus OpenStreetMap geladen.</span>'}
+      <button id="btnCacheClear" title="gespeicherte OpenStreetMap-Antworten löschen">Zwischenspeicher leeren</button></div>
+    <table style="margin-top:8px"><thead><tr><th>#</th><th>km</th><th>Status</th><th>Funde</th><th></th></tr></thead><tbody>
+    ${state.sections.map((s, i) => `<tr data-s="${i}"><td>${i + 1}</td><td>${fmtKm(s.startM)}–${fmtKm(s.endM)}</td>
+      <td><span style="color:${SECTION_COLOR[s.status]};font-weight:600">● ${SECTION_LABEL[s.status]}</span>${s.error && s.status !== 'ok' && s.status !== 'cache' ? `<div class="meta">${escapeHtml(s.error)}</div>` : ''}</td>
+      <td>${s.status === 'pending' ? '–' : s.count}</td>
+      <td>${s.status !== 'ok' && s.status !== 'cache' ? '<button data-retry>Erneut laden</button>' : ''}</td></tr>`).join('')}
+    </tbody></table>`;
+  $('btnRetryAll')?.addEventListener('click', () => search(open.map(([, i]) => i)));
+  $('btnCacheClear').addEventListener('click', () => { cacheClear(); log('Zwischenspeicher geleert', 'ok'); });
+  pane.querySelectorAll('tr[data-s]').forEach((tr) => {
+    const i = +tr.dataset.s;
+    tr.querySelector('[data-retry]')?.addEventListener('click', (e) => { e.stopPropagation(); search([i]); });
+    tr.addEventListener('click', () => { const sec = state.sections[i]; const pts = sectionRoute(sec); if (map && pts.length) map.fitBounds(pts.map((p) => [p.latitude, p.longitude]), { padding: [30, 30] }); });
+  });
 }
 
 /* ================================================================
@@ -872,6 +992,13 @@ function drawMap(fit) {
   markerLayer.clearLayers(); markers.clear();
   if (!state.tour) return;
   routeLayer = L.polyline(route.map((p) => [p.latitude, p.longitude]), { color: '#cf222e', weight: 4 }).addTo(map);
+  if (state.sections) {
+    state.sections.forEach((s, i) => {
+      const pts = sectionRoute(s).map((p) => [p.latitude, p.longitude]);
+      if (pts.length > 1) L.polyline(pts, { color: SECTION_COLOR[s.status], weight: 6, opacity: 0.85 })
+        .bindTooltip(`Abschnitt ${i + 1}: ${SECTION_LABEL[s.status]}${s.status === 'pending' ? '' : ` · ${s.count} Funde`}`).addTo(markerLayer);
+    });
+  }
   for (const it of state.items) {
     if (!groupOn(it)) continue;
     const color = !it.checked ? '#9aa4ae' : (it.source === 'osm' || it.source === 'wiki') ? '#e8780c' : it.source === 'manual' ? '#1a7f37' : '#1f6feb';
@@ -911,6 +1038,7 @@ function render(fit) {
   $('btnClaude').disabled = !t;
   renderList();
   renderTimeline();
+  renderSections();
   drawMap(fit);
 }
 function renderGroups() {
@@ -1100,6 +1228,7 @@ document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('cli
   document.querySelectorAll('.tabs button').forEach((x) => x.classList.toggle('active', x === b));
   $('pane-list').classList.toggle('hidden', b.dataset.tab !== 'list');
   $('pane-timeline').classList.toggle('hidden', b.dataset.tab !== 'timeline');
+  $('pane-sections').classList.toggle('hidden', b.dataset.tab !== 'sections');
 }));
 
 /* ================================================================
