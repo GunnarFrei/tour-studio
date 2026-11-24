@@ -246,6 +246,7 @@ const GROUPS = {
   natur: 'Natur',
   tiere: 'Tiere',
   kurioses: 'Kunst & Kurioses',
+  kleindenkmal: 'Wegekreuze & Bildstöcke',
   weitere: 'Weitere (ungeprüft)',
 };
 
@@ -258,6 +259,29 @@ const g = (label, corridor, group) => ({ label, corridor, group });
 function classify(t) {
   const h = t.historic, b = t.building;
   const hasWiki = !!(t.wikipedia || t.wikidata);
+  // Technik am Wasser, alte Industrie, Verkehr
+  const mov = t['bridge:movable'];
+  if (mov && mov !== 'no') return g({ bascule: 'Klappbrücke', swing: 'Drehbrücke', lift: 'Hubbrücke', drawbridge: 'Zugbrücke', transporter: 'Schwebefähre' }[mov] || 'bewegliche Brücke', 100, 'technik');
+  if (h === 'bridge' || (t.bridge && t.bridge !== 'no' && t.heritage)) return g('historische Brücke', 150, 'technik');
+  if (t.amenity === 'ferry_terminal' || t.route === 'ferry') return g('Fähre', 200, 'technik');
+  if (t.man_made === 'pumping_station') return g('Schöpfwerk', 200, 'technik');
+  if (t.man_made === 'kiln' || h === 'kiln' || h === 'lime_kiln') return g(h === 'lime_kiln' || /lime/.test(t.kiln || t.product || '') ? 'Kalkofen' : /brick/.test(t.kiln || t.product || '') ? 'Ziegelei-Ringofen' : 'historischer Brennofen', 200, 'technik');
+  if (h === 'charcoal_pile') return g('Kohlenmeiler', 150, 'technik');
+  if (t.man_made === 'chimney') return g('alter Schornstein', 300, 'technik');
+  if (h === 'railway_station' || t.railway === 'station') return g('historischer Bahnhof', 200, 'technik');
+  // Kleindenkmäler und Kurioses
+  if (h === 'milestone') return g('Meilenstein', 100, 'kurioses');
+  if (h === 'boundary_stone') return g('Grenzstein', 100, 'kurioses');
+  if (h === 'bunker' || t.military === 'bunker') return g('Bunker', 150, 'geschichte');
+  if (h === 'wayside_cross') return g('Wegekreuz', 60, 'kleindenkmal');
+  if (h === 'wayside_shrine') return g('Bildstock', 60, 'kleindenkmal');
+  // Landschaft
+  if (t.natural === 'peak') return g('Berg', 800, 'natur');
+  if (t.natural === 'hill') return g('Hügel', 600, 'natur');
+  if (t.natural === 'spring') return g('Quelle', 200, 'natur');
+  if (t.natural === 'cave_entrance') return g('Höhle', 200, 'natur');
+  if (t.natural === 'rock' || t.geological === 'outcrop') return g('Felsen', 200, 'natur');
+  if (t.leisure === 'park' || t.leisure === 'garden') return g('Park oder Garten', 600, 'natur');
   // Geschichte
   if (h === 'castle') return g(t.castle_type === 'palace' || t.castle_type === 'manor' ? 'Schloss' : 'Burg', 1500, 'geschichte');
   if (h === 'palace' || h === 'manor') return g(h === 'palace' ? 'Schloss' : 'Herrenhaus', 600, 'geschichte');
@@ -323,7 +347,7 @@ function classify(t) {
 function overpassQuery([s, w, n, e]) {
   return `[out:json][timeout:60][bbox:${s},${w},${n},${e}];
 (
-nwr[historic~"^(castle|monastery|palace|manor|ruins|tower|city_gate|windmill|watermill|fort|monument|archaeological_site|memorial|building|mine|industrial|factory|aircraft|helicopter|locomotive|railway_car|ship|wreck|tank|vehicle)$"];
+nwr[historic~"^(castle|monastery|palace|manor|ruins|tower|city_gate|windmill|watermill|fort|monument|archaeological_site|memorial|building|mine|industrial|factory|bridge|kiln|lime_kiln|charcoal_pile|railway_station|milestone|boundary_stone|bunker|wayside_cross|wayside_shrine|aircraft|helicopter|locomotive|railway_car|ship|wreck|tank|vehicle)$"];
 nwr[amenity=place_of_worship][name];
 nwr[building=cathedral][name];
 nwr["tower:type"=observation];
@@ -332,6 +356,19 @@ nwr[tourism~"^(museum|viewpoint|attraction|zoo|artwork)$"];
 nwr[amenity=townhall][name][historic];
 nwr[amenity=townhall][name][heritage];
 nwr[man_made=works][name][~"^(historic|heritage|wikidata)$"~"."];
+nwr["bridge:movable"];
+nwr[bridge][heritage];
+nwr[amenity=ferry_terminal][name];
+nwr[route=ferry][name];
+nwr[man_made=pumping_station][name][~"^(historic|heritage|wikidata)$"~"."];
+nwr[man_made=kiln];
+nwr[man_made=chimney][~"^(historic|heritage)$"~"."];
+nwr[railway=station][~"^(heritage|railway:preserved)$"~"."];
+nwr[natural~"^(peak|hill|spring|rock)$"][name];
+nwr[natural=cave_entrance];
+nwr[geological=outcrop][name];
+nwr[leisure~"^(park|garden)$"][name][~"^(historic|heritage|wikidata)$"~"."];
+nwr[military=bunker];
 nwr[heritage][name];
 nwr[natural=waterfall];
 nwr[aeroway=aerodrome][name];
@@ -352,7 +389,7 @@ function fallbackName(t, cls) {
   if (t.name) return t.name;
   const model = t.model || t['aircraft:model'] || t['aircraft:type'] || t.type_name || '';
   if (model) return `${cls.label}: ${model}`;
-  if (['ausgestelltes Flugzeug', 'ausgestellter Hubschrauber', 'historische Bahn', 'historisches Fahrzeug', 'Vogelbeobachtung', 'Aussichtsturm', 'Aussichtspunkt', 'Naturdenkmal', 'Wasserturm', 'Windmühle', 'Wassermühle'].includes(cls.label)) {
+  if (['ausgestelltes Flugzeug', 'ausgestellter Hubschrauber', 'historische Bahn', 'historisches Fahrzeug', 'Vogelbeobachtung', 'Aussichtsturm', 'Aussichtspunkt', 'Naturdenkmal', 'Wasserturm', 'Windmühle', 'Wassermühle', 'Klappbrücke', 'Drehbrücke', 'Hubbrücke', 'Zugbrücke', 'bewegliche Brücke', 'historische Brücke', 'Fähre', 'Kalkofen', 'Ziegelei-Ringofen', 'historischer Brennofen', 'Kohlenmeiler', 'alter Schornstein', 'Meilenstein', 'Grenzstein', 'Bunker', 'Wegekreuz', 'Bildstock', 'Höhle'].includes(cls.label)) {
     return cls.label;
   }
   return null; // ohne Namen nicht ansagen
@@ -559,7 +596,7 @@ async function overpass(query, label, rounds = 1) {
    ({type, id, lat, lon, tags}) umgebaut, damit die Auswertung identisch bleibt. */
 const QLEVER = ['https://qlever.cs.uni-freiburg.de/api/osm-planet', 'https://qlever.dev/api/osm-planet'];
 const QL_PATTERNS = [
-  ['historic', 'castle monastery palace manor ruins tower city_gate windmill watermill fort monument archaeological_site memorial building mine industrial factory aircraft helicopter locomotive railway_car ship wreck tank vehicle'],
+  ['historic', 'castle monastery palace manor ruins tower city_gate windmill watermill fort monument archaeological_site memorial building mine industrial factory bridge kiln lime_kiln charcoal_pile railway_station milestone boundary_stone bunker wayside_cross wayside_shrine aircraft helicopter locomotive railway_car ship wreck tank vehicle'],
   ['amenity', 'place_of_worship', 'name'],
   ['building', 'cathedral', 'name'],
   ['tower:type', 'observation'],
@@ -570,6 +607,25 @@ const QL_PATTERNS = [
   ['man_made', 'works', 'name heritage'],
   ['man_made', 'works', 'name historic'],
   ['heritage', '*', 'name'],
+  ['bridge:movable', '*'],
+  ['bridge', '*', 'heritage'],
+  ['amenity', 'ferry_terminal', 'name'],
+  ['route', 'ferry', 'name'],
+  ['man_made', 'pumping_station', 'name historic'],
+  ['man_made', 'pumping_station', 'name heritage'],
+  ['man_made', 'pumping_station', 'name wikidata'],
+  ['man_made', 'kiln'],
+  ['man_made', 'chimney', 'historic'],
+  ['man_made', 'chimney', 'heritage'],
+  ['railway', 'station', 'heritage'],
+  ['railway', 'station', 'railway:preserved'],
+  ['natural', 'peak hill spring rock', 'name'],
+  ['natural', 'cave_entrance'],
+  ['geological', 'outcrop', 'name'],
+  ['leisure', 'park garden', 'name historic'],
+  ['leisure', 'park garden', 'name heritage'],
+  ['leisure', 'park garden', 'name wikidata'],
+  ['military', 'bunker'],
   ['natural', 'waterfall'],
   ['aeroway', 'aerodrome', 'name'],
   ['lock', 'yes', 'name'],
@@ -1244,8 +1300,9 @@ function render(fit) {
 }
 function renderGroups() {
   const bar = $('groupBar');
-  if (!state.groups) state.groups = Object.fromEntries(Object.keys(GROUPS).map((k) => [k, k !== 'weitere']));
+  if (!state.groups) state.groups = Object.fromEntries(Object.keys(GROUPS).map((k) => [k, k !== 'weitere' && k !== 'kleindenkmal']));
   if (!('weitere' in state.groups)) state.groups.weitere = false;
+  if (!('kleindenkmal' in state.groups)) state.groups.kleindenkmal = false;
   const counts = {};
   for (const it of state.items) if (it.group) counts[it.group] = (counts[it.group] || 0) + 1;
   const allOn = Object.keys(GROUPS).every((k) => state.groups[k] !== false);
