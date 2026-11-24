@@ -859,6 +859,37 @@ function waterCrossings(elements, secIndex, sec, taken) {
       desc: '', wikiText: '', wikiUrl: '', facts: [`Querung bei km ${fmtKm(f.atM)}`], water: true, osm: { wikipedia: f.wikipedia, wikidata: f.wikidata, link: f.link } };
   }).filter(Boolean);
 }
+// Gewässer ohne Wiki-Verweis in OpenStreetMap: über den Namen bei Wikidata suchen.
+// Gleichnamige Gewässer gibt es oft mehrfach (z. B. drei Flüsse „Nette“) – genommen wird
+// das, dessen Wikidata-Koordinate der Querung am nächsten liegt (höchstens 150 km).
+async function resolveWaterByName(item) {
+  const names = [...new Set([item.name, item.name.replace(/\s*\(.*?\)\s*/g, ' ').trim()])].filter(Boolean);
+  const get = async (url) => { const { res, body } = await timedFetch(url, {}, 20000, `wartet auf Wikidata (${item.name})`); if (!res.ok) throw new Error(`Wikidata HTTP ${res.status}`); return JSON.parse(body); };
+  const cands = new Map();
+  for (const n of names) {
+    const r = await get(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(n)}&language=de&uselang=de&type=item&limit=20&format=json&origin=*`);
+    for (const c of r.search || []) {
+      if (!/fluss|bach|kanal|gewässer|wasserlauf|flussarm|wasserstraße|graben|\btief\b|river|canal|stream/i.test(c.description || '')) continue;
+      const norm = (x) => String(x || '').toLowerCase().replace(/[-\s]+/g, ' ').trim();
+      if (norm(c.label) !== norm(n)) continue;
+      cands.set(c.id, c.description);
+    }
+    if (cands.size) break;
+  }
+  if (!cands.size) { log(`  ${item.name}: kein passendes Gewässer bei Wikidata gefunden`, 'dim'); return; }
+  const ents = (await get(`https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${[...cands.keys()].join('|')}&props=claims|sitelinks&sitefilter=dewiki&format=json&origin=*`)).entities || {};
+  let best = null;
+  for (const [id, e] of Object.entries(ents)) {
+    const pts = (e.claims?.P625 || []).map((c) => c.mainsnak?.datavalue?.value).filter(Boolean);
+    const d = pts.length ? Math.min(...pts.map((v) => distance(item, { latitude: v.latitude, longitude: v.longitude }))) : Infinity;
+    if (!best || d < best.d) best = { id, d, title: e.sitelinks?.dewiki?.title || '' };
+  }
+  if (!best || (best.d > 150000 && !(cands.size === 1 && best.d === Infinity))) { log(`  ${item.name}: ${cands.size} gleichnamige Gewässer, keins in der Nähe – nicht zugeordnet`, 'dim'); return; }
+  item.osm.wikidata = best.id;
+  if (best.title) item.osm.wikipedia = `de:${best.title}`;
+  log(`  ${item.name}: über den Namen zugeordnet → ${best.title || best.id} (${cands.get(best.id)}${isFinite(best.d) ? `, Bezugspunkt ${fmtKm(best.d)} km entfernt` : ''})`, 'ok');
+}
+
 // Quelle, Mündung und Länge aus Wikidata
 async function waterFacts(item) {
   const q = item.osm.wikidata;
@@ -1083,6 +1114,14 @@ async function search(targets = null) {
       }
     }
     if (sourceMode !== 'wiki') log(`Aussortiert: ${stats.far} zu weit von der Strecke, ${stats.noCat} keine passende Art, ${stats.skipped} Stolpersteine/Gedenktafeln, ${stats.own} schon als eigener Wegpunkt, ${stats.dup} doppelt eingetragen, ${stats.noName} ohne Namen`, 'dim');
+
+    // 1c) Gewässer ohne Wiki-Verweis über den Namen zuordnen
+    const unnamedWater = newItems.filter((p) => p.water && !p.osm.wikipedia && !p.osm.wikidata);
+    if (unnamedWater.length) log(`Suche ${unnamedWater.length} Gewässer über den Namen bei Wikidata …`, 'ok');
+    for (const p of unnamedWater) {
+      job.step = `Gewässer zuordnen: ${p.name}`;
+      try { await resolveWaterByName(p); } catch (e) { if (e.message === 'abgebrochen') throw e; log(`  ${p.name}: ${e.message}`, 'warn'); }
+    }
 
     // 2) Wikipedia-Texte für neue OpenStreetMap-Funde
     const withWiki = newItems.filter((p) => p.source === 'osm' && (p.osm.wikipedia || p.osm.wikidata));
