@@ -297,6 +297,7 @@ function classify(t) {
   if (t.bridge === 'aqueduct') return g('Kanalbrücke', 300, 'technik');
   if (t.man_made === 'water_tower') return g('Wasserturm', 600, 'technik');
   if (t.man_made === 'lighthouse') return g('Leuchtturm', 1500, 'technik');
+  if (h === 'industrial' || h === 'factory' || h === 'mine' || t.man_made === 'works') return g('Industriedenkmal', 300, 'technik');
   if (t.tourism === 'museum') return g('Museum', 300, 'geschichte');
   // Natur (Flächen nur mit Wikipedia-Artikel, sonst zu viel Unbedeutendes)
   if (t['tower:type'] === 'observation') return g('Aussichtsturm', 1500, 'natur');
@@ -313,6 +314,8 @@ function classify(t) {
   // Kunst & Kurioses
   if (t.tourism === 'artwork') return g('Kunstwerk', 100, 'kurioses');
   if (t.tourism === 'attraction') return g('Sehenswürdigkeit', 300, 'kurioses');
+  // Baudenkmal ohne passende Art (z. B. Fabrikgebäude, Hof): nur nah an der Strecke
+  if (t.heritage && t.name) return g('Baudenkmal', 150, 'geschichte');
   return null;
 }
 
@@ -320,7 +323,7 @@ function classify(t) {
 function overpassQuery([s, w, n, e]) {
   return `[out:json][timeout:60][bbox:${s},${w},${n},${e}];
 (
-nwr[historic~"^(castle|monastery|palace|manor|ruins|tower|city_gate|windmill|watermill|fort|monument|archaeological_site|memorial|building|mine|aircraft|helicopter|locomotive|railway_car|ship|wreck|tank|vehicle)$"];
+nwr[historic~"^(castle|monastery|palace|manor|ruins|tower|city_gate|windmill|watermill|fort|monument|archaeological_site|memorial|building|mine|industrial|factory|aircraft|helicopter|locomotive|railway_car|ship|wreck|tank|vehicle)$"];
 nwr[amenity=place_of_worship][name];
 nwr[building=cathedral][name];
 nwr["tower:type"=observation];
@@ -328,6 +331,8 @@ nwr[man_made~"^(lighthouse|windmill|watermill|water_tower)$"];
 nwr[tourism~"^(museum|viewpoint|attraction|zoo|artwork)$"];
 nwr[amenity=townhall][name][historic];
 nwr[amenity=townhall][name][heritage];
+nwr[man_made=works][name][~"^(historic|heritage|wikidata)$"~"."];
+nwr[heritage][name];
 nwr[natural=waterfall];
 nwr[aeroway=aerodrome][name];
 nwr[lock=yes][name];
@@ -554,7 +559,7 @@ async function overpass(query, label, rounds = 1) {
    ({type, id, lat, lon, tags}) umgebaut, damit die Auswertung identisch bleibt. */
 const QLEVER = ['https://qlever.cs.uni-freiburg.de/api/osm-planet', 'https://qlever.dev/api/osm-planet'];
 const QL_PATTERNS = [
-  ['historic', 'castle monastery palace manor ruins tower city_gate windmill watermill fort monument archaeological_site memorial building mine aircraft helicopter locomotive railway_car ship wreck tank vehicle'],
+  ['historic', 'castle monastery palace manor ruins tower city_gate windmill watermill fort monument archaeological_site memorial building mine industrial factory aircraft helicopter locomotive railway_car ship wreck tank vehicle'],
   ['amenity', 'place_of_worship', 'name'],
   ['building', 'cathedral', 'name'],
   ['tower:type', 'observation'],
@@ -562,6 +567,9 @@ const QL_PATTERNS = [
   ['tourism', 'museum viewpoint attraction zoo artwork'],
   ['amenity', 'townhall', 'name historic'],
   ['amenity', 'townhall', 'name heritage'],
+  ['man_made', 'works', 'name heritage'],
+  ['man_made', 'works', 'name historic'],
+  ['heritage', '*', 'name'],
   ['natural', 'waterfall'],
   ['aeroway', 'aerodrome', 'name'],
   ['lock', 'yes', 'name'],
@@ -578,7 +586,7 @@ function qleverQuery([s, w, n, e], spatial) {
   const blocks = QL_PATTERNS.map(([key, values, extra = '']) => {
     const x = `?v${v++}`;
     const vals = values.split(' ');
-    let b = vals.length === 1 ? `?osm osmkey:${key} "${vals[0]}" .` : `?osm osmkey:${key} ${x} . FILTER(${x} IN (${vals.map((t) => `"${t}"`).join(', ')}))`;
+    let b = values === '*' ? `?osm osmkey:${key} ${x} .` : vals.length === 1 ? `?osm osmkey:${key} "${vals[0]}" .` : `?osm osmkey:${key} ${x} . FILTER(${x} IN (${vals.map((t) => `"${t}"`).join(', ')}))`;
     for (const ex of extra.split(' ').filter(Boolean)) {
       const [k, val] = ex.split('=');
       b += val ? ` ?osm osmkey:${k} "${val}" .` : ` ?osm osmkey:${k} ?e${v++} .`;
